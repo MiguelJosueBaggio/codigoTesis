@@ -1,0 +1,525 @@
+{
+  "name": "Pipeline Principal - Flujo 1",
+  "meta": {
+    "description": "Workflow principal del Flujo 1 (proposal.md, change n8n-orchestration-workflows / C-08): trigger (archivo nuevo / programacion horaria / manual, D-7) -> ingestion -> validation -> transformation -> persistence -> (IF analysis_config.yaml, D-8) -> analysis. Cada etapa se ejecuta via el sub-workflow generico de reintentos (D-1/D-5, 'ejecutar_etapa_con_reintentos.json') invocado con el comando de esa etapa como parametro -- n8n invoca pipeline.* SOLO por CLI subprocess, nunca importa Python (DD-05). Contrato de directorio de corrida + manifest.json: D-3."
+  },
+  "nodes": [
+    {
+      "id": "trigger-archivo-nuevo",
+      "name": "Trigger: Archivo Nuevo",
+      "type": "n8n-nodes-base.localFileTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "triggerOn": "folder",
+        "path": "={{$env.PIPELINE_CARPETA_ENTRADA}}",
+        "events": ["add"]
+      }
+    },
+    {
+      "id": "trigger-barrido-programado",
+      "name": "Trigger: Barrido Programado",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 200],
+      "notes": "Red de seguridad (D-7): re-barre PIPELINE_CARPETA_ENTRADA por si n8n estaba caido cuando llego un archivo. El estado 'procesado' es por filesystem (mueve a procesados/errores), no por consulta a la base -- el barrido solo ve lo que quedo en la carpeta raiz.",
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      }
+    },
+    {
+      "id": "trigger-manual",
+      "name": "Trigger: Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 400],
+      "parameters": {}
+    },
+    {
+      "id": "normalizar-entrada-del-archivo",
+      "name": "Normalizar Entrada del Archivo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 200],
+      "notes": "D-3: arma el run_id (timestamp UTC + hash corto del archivo) y el directorio de corrida `PIPELINE_CARPETA_CORRIDAS/<run_id>`; resuelve la ruta del archivo a procesar sin importar cual de los 3 triggers disparo la ejecucion.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const crypto = require('crypto');\nconst rutaArchivo = $json.path || $json.ruta || ($json.parameter && $json.parameter.path);\nconst timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\\.\\d+Z$/, 'Z');\nconst hashCorto = crypto.createHash('sha256').update(String(rutaArchivo)).digest('hex').slice(0, 8);\nconst runId = `${timestamp}_${hashCorto}`;\nconst corridaDir = `${$env.PIPELINE_CARPETA_CORRIDAS}/${runId}`;\nreturn { json: { ruta_archivo: rutaArchivo, run_id: runId, corrida_dir: corridaDir } };"
+      }
+    },
+    {
+      "id": "ejecutar-reintentos-ingesta",
+      "name": "Ejecutar con Reintentos: Ingesta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [440, 0],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": {
+          "value": "ejecutar_etapa_con_reintentos",
+          "mode": "list",
+          "cachedResultName": "Ejecutar Etapa Con Reintentos"
+        },
+        "workflowInputs": {
+          "value": {
+            "etapa": "=ingestion",
+            "run_id": "={{$json.run_id}}",
+            "comando": "={{$env.PYTHON_BIN}} -m pipeline.ingestion \"{{$json.ruta_archivo}}\" --output \"{{$json.corrida_dir}}/ingerido.pkl\""
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluar-resultado-ingesta",
+      "name": "Evaluar Resultado: Ingesta",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 0],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "ok",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "ok", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "error_dominio", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "escalamiento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "escalamiento", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ejecutar-reintentos-validacion",
+      "name": "Ejecutar con Reintentos: Validacion",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [880, -150],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": {
+          "value": "ejecutar_etapa_con_reintentos",
+          "mode": "list",
+          "cachedResultName": "Ejecutar Etapa Con Reintentos"
+        },
+        "workflowInputs": {
+          "value": {
+            "etapa": "=validation",
+            "run_id": "={{$json.run_id}}",
+            "comando": "={{$env.PYTHON_BIN}} -m pipeline.validation \"{{$json.corrida_dir}}/ingerido.pkl\" --output-dir \"{{$json.corrida_dir}}\""
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluar-resultado-validacion",
+      "name": "Evaluar Resultado: Validacion",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1100, -150],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "ok",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "ok", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "error_dominio", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "escalamiento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "escalamiento", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ejecutar-reintentos-transformacion",
+      "name": "Ejecutar con Reintentos: Transformacion",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1320, -150],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": {
+          "value": "ejecutar_etapa_con_reintentos",
+          "mode": "list",
+          "cachedResultName": "Ejecutar Etapa Con Reintentos"
+        },
+        "workflowInputs": {
+          "value": {
+            "etapa": "=transformation",
+            "run_id": "={{$json.run_id}}",
+            "comando": "={{$env.PYTHON_BIN}} -m pipeline.transformation \"{{$json.corrida_dir}}/validos.pkl\" --output-dir \"{{$json.corrida_dir}}\""
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluar-resultado-transformacion",
+      "name": "Evaluar Resultado: Transformacion",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1540, -150],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "ok",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "ok", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "error_dominio", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "escalamiento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "escalamiento", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ejecutar-reintentos-persistencia",
+      "name": "Ejecutar con Reintentos: Persistencia",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1760, -150],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": {
+          "value": "ejecutar_etapa_con_reintentos",
+          "mode": "list",
+          "cachedResultName": "Ejecutar Etapa Con Reintentos"
+        },
+        "workflowInputs": {
+          "value": {
+            "etapa": "=persistence",
+            "run_id": "={{$json.run_id}}",
+            "comando": "={{$env.PYTHON_BIN}} -m pipeline.persistence \"{{$json.corrida_dir}}\""
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluar-resultado-persistencia",
+      "name": "Evaluar Resultado: Persistencia",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1980, -150],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "ok",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "ok", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "error_dominio", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "escalamiento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "escalamiento", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "verificar-analysis-config",
+      "name": "Verificar analysis_config.yaml",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, -300],
+      "notes": "D-8: chequeo de existencia de archivo en el filesystem del host self-hosted -- no invoca ningun modulo pipeline.*, solo resuelve una condicion para el IF siguiente.",
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\nconst rutaConfig = $env.PIPELINE_ANALYSIS_CONFIG;\nreturn { json: { ...$json, analysis_config_existe: fs.existsSync(rutaConfig) } };"
+      }
+    },
+    {
+      "id": "if-existe-analysis-config",
+      "name": "IF: Existe analysis_config.yaml",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2420, -300],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{$json.analysis_config_existe}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ejecutar-reintentos-analisis",
+      "name": "Ejecutar con Reintentos: Analisis",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [2640, -400],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": {
+          "value": "ejecutar_etapa_con_reintentos",
+          "mode": "list",
+          "cachedResultName": "Ejecutar Etapa Con Reintentos"
+        },
+        "workflowInputs": {
+          "value": {
+            "etapa": "=analysis",
+            "run_id": "={{$json.run_id}}",
+            "comando": "={{$env.PYTHON_BIN}} -m pipeline.analysis --config \"{{$env.PIPELINE_ANALYSIS_CONFIG}}\" --output-dir \"{{$json.corrida_dir}}/analisis\""
+          }
+        }
+      }
+    },
+    {
+      "id": "evaluar-resultado-analisis",
+      "name": "Evaluar Resultado: Analisis",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2860, -400],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "ok",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "ok", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "error_dominio", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            },
+            {
+              "outputKey": "escalamiento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  { "leftValue": "={{$json.status}}", "rightValue": "escalamiento", "operator": { "type": "string", "operation": "equals" } }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "mover-archivo-a-procesados",
+      "name": "Mover Archivo a Procesados",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1980, 200],
+      "notes": "D-7: estado 'procesado' por filesystem (exito O rechazo de datos con reporte, RN-ING-04/RN-VAL-08) -- el barrido horario ya no vuelve a tomar este archivo. Utilitario de shell (mover un archivo), no invoca logica de pipeline.*.",
+      "parameters": {
+        "command": "={{$env.PYTHON_BIN}} -c \"import shutil, pathlib; destino = pathlib.Path(r'{{$env.PIPELINE_CARPETA_ENTRADA}}') / 'procesados'; destino.mkdir(parents=True, exist_ok=True); shutil.move(r'{{$json.ruta_archivo}}', str(destino))\""
+      }
+    },
+    {
+      "id": "mover-archivo-a-errores",
+      "name": "Mover Archivo a Errores",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [1980, 450],
+      "notes": "D-7: fallo persistente (escalamiento) -- el archivo se retira de la carpeta monitoreada para que el barrido horario no lo vuelva a intentar indefinidamente; queda disponible para inspeccion manual.",
+      "parameters": {
+        "command": "={{$env.PYTHON_BIN}} -c \"import shutil, pathlib; destino = pathlib.Path(r'{{$env.PIPELINE_CARPETA_ENTRADA}}') / 'errores'; destino.mkdir(parents=True, exist_ok=True); shutil.move(r'{{$json.ruta_archivo}}', str(destino))\""
+      }
+    },
+    {
+      "id": "detener-y-escalar",
+      "name": "Detener y Escalar",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [2200, 600],
+      "notes": "D-6: marca la ejecucion como FALLIDA en el dashboard de n8n (visible/auditable) y dispara el error workflow configurado en Settings ('escalamiento_notificacion.json') -- RN-GLB-03, notificacion humana ante fallo persistente.",
+      "parameters": {
+        "errorMessage": "=Fallo persistente en la etapa '{{$json.etapa}}' (run {{$json.run_id}}) tras {{$json.intentos}} intento(s). exitCode={{$json.exitCode}}. comando='{{$json.comando}}'. stderr={{$json.stderr}}"
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: Archivo Nuevo": {
+      "main": [[{ "node": "Normalizar Entrada del Archivo", "type": "main", "index": 0 }]]
+    },
+    "Trigger: Barrido Programado": {
+      "main": [[{ "node": "Normalizar Entrada del Archivo", "type": "main", "index": 0 }]]
+    },
+    "Trigger: Manual": {
+      "main": [[{ "node": "Normalizar Entrada del Archivo", "type": "main", "index": 0 }]]
+    },
+    "Normalizar Entrada del Archivo": {
+      "main": [[{ "node": "Ejecutar con Reintentos: Ingesta", "type": "main", "index": 0 }]]
+    },
+    "Ejecutar con Reintentos: Ingesta": {
+      "main": [[{ "node": "Evaluar Resultado: Ingesta", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Resultado: Ingesta": {
+      "main": [
+        [{ "node": "Ejecutar con Reintentos: Validacion", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [
+          { "node": "Mover Archivo a Errores", "type": "main", "index": 0 },
+          { "node": "Detener y Escalar", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ejecutar con Reintentos: Validacion": {
+      "main": [[{ "node": "Evaluar Resultado: Validacion", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Resultado: Validacion": {
+      "main": [
+        [{ "node": "Ejecutar con Reintentos: Transformacion", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [
+          { "node": "Mover Archivo a Errores", "type": "main", "index": 0 },
+          { "node": "Detener y Escalar", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ejecutar con Reintentos: Transformacion": {
+      "main": [[{ "node": "Evaluar Resultado: Transformacion", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Resultado: Transformacion": {
+      "main": [
+        [{ "node": "Ejecutar con Reintentos: Persistencia", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [
+          { "node": "Mover Archivo a Errores", "type": "main", "index": 0 },
+          { "node": "Detener y Escalar", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ejecutar con Reintentos: Persistencia": {
+      "main": [[{ "node": "Evaluar Resultado: Persistencia", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Resultado: Persistencia": {
+      "main": [
+        [{ "node": "Verificar analysis_config.yaml", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [
+          { "node": "Mover Archivo a Errores", "type": "main", "index": 0 },
+          { "node": "Detener y Escalar", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Verificar analysis_config.yaml": {
+      "main": [[{ "node": "IF: Existe analysis_config.yaml", "type": "main", "index": 0 }]]
+    },
+    "IF: Existe analysis_config.yaml": {
+      "main": [
+        [{ "node": "Ejecutar con Reintentos: Analisis", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ejecutar con Reintentos: Analisis": {
+      "main": [[{ "node": "Evaluar Resultado: Analisis", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Resultado: Analisis": {
+      "main": [
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [{ "node": "Mover Archivo a Procesados", "type": "main", "index": 0 }],
+        [
+          { "node": "Mover Archivo a Errores", "type": "main", "index": 0 },
+          { "node": "Detener y Escalar", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionOrder": "v1",
+    "errorWorkflow": "escalamiento_notificacion"
+  }
+}

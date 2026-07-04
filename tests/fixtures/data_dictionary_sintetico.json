@@ -1,0 +1,60 @@
+{
+  "variables": [
+    {
+      "nombre_canonico": "id_unidad",
+      "descripcion": "Identificador generico de la unidad experimental",
+      "tipo_dato": "entero",
+      "obligatorio": true
+    },
+    {
+      "nombre_canonico": "bloque",
+      "descripcion": "Bloque experimental generico",
+      "tipo_dato": "categorico",
+      "obligatorio": true,
+      "valores_admisibles": ["B1", "B2", "B3", "B4"]
+    },
+    {
+      "nombre_canonico": "tratamiento",
+      "descripcion": "Codigo de tratamiento generico",
+      "tipo_dato": "categorico",
+      "obligatorio": true,
+      "valores_admisibles": ["T1", "T2", "T3"]
+    },
+    {
+      "nombre_canonico": "variable_respuesta_1",
+      "descripcion": "Variable de respuesta numerica generica (obligatoria)",
+      "tipo_dato": "real",
+      "obligatorio": true,
+      "unidad": "unidad_generica",
+      "rango": {"min": 0, "max": 100}
+    },
+    {
+      "nombre_canonico": "variable_respuesta_2",
+      "descripcion": "Variable de respuesta numerica generica (opcional)",
+      "tipo_dato": "real",
+      "obligatorio": false,
+      "unidad": "unidad_generica",
+      "rango": {"min": 0, "max": 50}
+    },
+    {
+      "nombre_canonico": "fecha_inicio",
+      "descripcion": "Fecha generica de inicio",
+      "tipo_dato": "fecha",
+      "obligatorio": true
+    },
+    {
+      "nombre_canonico": "fecha_fin",
+      "descripcion": "Fecha generica de fin",
+      "tipo_dato": "fecha",
+      "obligatorio": true
+    }
+  ],
+  "reglas_cruzadas": [
+    {
+      "id": "orden_fechas",
+      "operador": "menor_igual",
+      "campos": ["fecha_inicio", "fecha_fin"],
+      "descripcion": "fecha_inicio <= fecha_fin"
+    }
+  ]
+}

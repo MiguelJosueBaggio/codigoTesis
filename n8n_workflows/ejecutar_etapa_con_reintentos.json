@@ -1,0 +1,237 @@
+{
+  "name": "Ejecutar Etapa Con Reintentos",
+  "meta": {
+    "description": "Sub-workflow generico de reintentos (D-5, change n8n-orchestration-workflows / C-08). Recibe UN comando de shell (parametro 'comando', armado por el workflow principal con `{{$env.PYTHON_BIN}} -m pipeline.<etapa>`), lo ejecuta, y clasifica el exitCode (D-4: 0 exito / 1 error de dominio, no se reintenta / 2 fallo transitorio de infraestructura, se reintenta con backoff exponencial real `base * 2^intento`, distinto del `retryOnFail` nativo de intervalo fijo). Una sola implementacion de la politica para las 5 etapas -- ninguna logica de pipeline.* vive aca, solo orquestacion (DD-05: n8n nunca importa Python)."
+  },
+  "nodes": [
+    {
+      "id": "trigger-recibir-comando",
+      "name": "Trigger: Recibir Comando",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [0, 200],
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            { "name": "etapa" },
+            { "name": "comando" },
+            { "name": "run_id" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "inicializar-intento",
+      "name": "Inicializar Intento",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [220, 200],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "intento", "type": "number", "value": "=0" },
+            { "name": "etapa", "type": "string", "value": "={{$json.etapa}}" },
+            { "name": "comando", "type": "string", "value": "={{$json.comando}}" },
+            { "name": "run_id", "type": "string", "value": "={{$json.run_id}}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ejecutar-comando",
+      "name": "Ejecutar Comando",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [440, 200],
+      "continueOnFail": true,
+      "parameters": {
+        "command": "={{$json.comando}}"
+      }
+    },
+    {
+      "id": "evaluar-exit-code",
+      "name": "Evaluar Exit Code",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 200],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "exito",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.exitCode}}",
+                    "rightValue": 0,
+                    "operator": { "type": "number", "operation": "equals" }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "dominio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.exitCode}}",
+                    "rightValue": 1,
+                    "operator": { "type": "number", "operation": "equals" }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "transitorio",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.exitCode}}",
+                    "rightValue": 2,
+                    "operator": { "type": "number", "operation": "equals" }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "transitorio" }
+      }
+    },
+    {
+      "id": "salida-ok",
+      "name": "Salida: OK",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [900, 0],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "status", "type": "string", "value": "=ok" },
+            { "name": "stdout", "type": "string", "value": "={{$json.stdout}}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "salida-error-dominio",
+      "name": "Salida: Error de Dominio",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [900, 150],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "status", "type": "string", "value": "=error_dominio" },
+            { "name": "stderr", "type": "string", "value": "={{$json.stderr}}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "quedan-reintentos",
+      "name": "¿Quedan Reintentos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 350],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{$json.intento}}",
+              "rightValue": "={{Number($env.PIPELINE_REINTENTOS_MAX)}}",
+              "operator": { "type": "number", "operation": "lt" }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "esperar-backoff-exponencial",
+      "name": "Esperar Backoff Exponencial",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1120, 300],
+      "parameters": {
+        "resume": "timeInterval",
+        "unit": "seconds",
+        "amount": "={{Number($env.PIPELINE_BACKOFF_BASE_SEGUNDOS) * (2 ** $json.intento)}}"
+      }
+    },
+    {
+      "id": "incrementar-intento",
+      "name": "Incrementar Intento",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1340, 300],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "intento", "type": "number", "value": "={{$json.intento + 1}}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "salida-escalamiento",
+      "name": "Salida: Escalamiento",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [1120, 450],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "name": "status", "type": "string", "value": "=escalamiento" },
+            { "name": "etapa", "type": "string", "value": "={{$json.etapa}}" },
+            { "name": "comando", "type": "string", "value": "={{$json.comando}}" },
+            { "name": "run_id", "type": "string", "value": "={{$json.run_id}}" },
+            { "name": "intentos", "type": "number", "value": "={{$json.intento}}" },
+            { "name": "exitCode", "type": "number", "value": "={{$json.exitCode}}" },
+            { "name": "stderr", "type": "string", "value": "={{$json.stderr}}" }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger: Recibir Comando": {
+      "main": [[{ "node": "Inicializar Intento", "type": "main", "index": 0 }]]
+    },
+    "Inicializar Intento": {
+      "main": [[{ "node": "Ejecutar Comando", "type": "main", "index": 0 }]]
+    },
+    "Ejecutar Comando": {
+      "main": [[{ "node": "Evaluar Exit Code", "type": "main", "index": 0 }]]
+    },
+    "Evaluar Exit Code": {
+      "main": [
+        [{ "node": "Salida: OK", "type": "main", "index": 0 }],
+        [{ "node": "Salida: Error de Dominio", "type": "main", "index": 0 }],
+        [{ "node": "¿Quedan Reintentos?", "type": "main", "index": 0 }]
+      ]
+    },
+    "¿Quedan Reintentos?": {
+      "main": [
+        [{ "node": "Esperar Backoff Exponencial", "type": "main", "index": 0 }],
+        [{ "node": "Salida: Escalamiento", "type": "main", "index": 0 }]
+      ]
+    },
+    "Esperar Backoff Exponencial": {
+      "main": [[{ "node": "Incrementar Intento", "type": "main", "index": 0 }]]
+    },
+    "Incrementar Intento": {
+      "main": [[{ "node": "Ejecutar Comando", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionOrder": "v1"
+  }
+}

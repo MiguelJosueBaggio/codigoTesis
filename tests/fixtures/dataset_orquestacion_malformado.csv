@@ -1,0 +1,7 @@
+codigo_ensayo,ambiente,tratamiento,id_unidad,variable
+E-SINT-01,Campo Norte,Testigo,U1,rendimiento_kg_ha
+E-SINT-01,Campo Norte,Testigo,U2,rendimiento_kg_ha
+E-SINT-01,Campo Norte,Fertilizado,U3,rendimiento_kg_ha
+E-SINT-01,Campo Norte,Fertilizado,U4,rendimiento_kg_ha
+E-SINT-01,Campo Sur,Testigo,U5,rendimiento_kg_ha
+E-SINT-01,Campo Sur,Fertilizado,U6,rendimiento_kg_ha

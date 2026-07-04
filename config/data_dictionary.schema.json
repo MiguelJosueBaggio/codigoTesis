@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tesis-automatizacion-ensayos-agricolas/data_dictionary.schema.json",
+  "title": "Meta-schema del diccionario de variables (config/data_dictionary.json)",
+  "description": "Define la forma valida que debe tener el diccionario de variables de un ensayo agricola. Formaliza el §Diccionario de variables de knowledge-base/04_modelo_de_datos.md. NO valida datos de un ensayo real (eso es C-04 / great_expectations); valida exclusivamente la forma del propio diccionario.",
+  "type": "object",
+  "required": ["variables"],
+  "properties": {
+    "variables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/variable_definition" }
+    },
+    "reglas_cruzadas": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/regla_cruzada" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "variable_definition": {
+      "type": "object",
+      "required": ["nombre_canonico", "descripcion", "tipo_dato", "obligatorio"],
+      "properties": {
+        "nombre_canonico": {
+          "type": "string",
+          "description": "Nombre canonico de la variable, en snake_case.",
+          "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+        },
+        "descripcion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tipo_dato": {
+          "type": "string",
+          "enum": ["entero", "real", "categorico", "fecha", "texto_libre"]
+        },
+        "unidad": {
+          "type": "string"
+        },
+        "rango": {
+          "type": "object",
+          "description": "Aplicable solo a variables numericas (entero/real).",
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "number" },
+            "max": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "valores_admisibles": {
+          "type": "array",
+          "description": "Catalogo cerrado de valores. Aplicable/obligatorio solo a variables categoricas.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "obligatorio": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "tipo_dato": { "const": "categorico" } },
+            "required": ["tipo_dato"]
+          },
+          "then": {
+            "required": ["valores_admisibles"],
+            "properties": {
+              "valores_admisibles": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": { "tipo_dato": { "enum": ["entero", "real"] } },
+              "required": ["tipo_dato"]
+            }
+          },
+          "then": {
+            "not": { "required": ["rango"] }
+          }
+        }
+      ]
+    },
+    "regla_cruzada": {
+      "type": "object",
+      "description": "Regla de validacion cruzada entre dos o mas variables (RN-VAL-07). El meta-schema fija su forma; el loader verifica que `campos` referencia variables existentes (integridad referencial, inexpresable en JSON Schema).",
+      "required": ["id", "operador", "campos"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operador": {
+          "type": "string",
+          "enum": ["menor_igual", "mayor_igual", "menor", "mayor", "igual", "distinto"]
+        },
+        "campos": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 2
+        },
+        "descripcion": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

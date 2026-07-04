@@ -1,0 +1,45 @@
+{
+  "variables": [
+    {
+      "nombre_canonico": "codigo_ensayo",
+      "descripcion": "Codigo generico del ensayo (fixture sintetico de orquestacion, C-08)",
+      "tipo_dato": "texto_libre",
+      "obligatorio": true
+    },
+    {
+      "nombre_canonico": "ambiente",
+      "descripcion": "Ambiente/bloque generico del ensayo",
+      "tipo_dato": "categorico",
+      "obligatorio": true,
+      "valores_admisibles": ["Campo Norte", "Campo Sur"]
+    },
+    {
+      "nombre_canonico": "tratamiento",
+      "descripcion": "Codigo de tratamiento generico",
+      "tipo_dato": "categorico",
+      "obligatorio": true,
+      "valores_admisibles": ["Testigo", "Fertilizado"]
+    },
+    {
+      "nombre_canonico": "id_unidad",
+      "descripcion": "Identificador generico de la unidad experimental",
+      "tipo_dato": "texto_libre",
+      "obligatorio": true
+    },
+    {
+      "nombre_canonico": "variable",
+      "descripcion": "Nombre generico de la variable observada",
+      "tipo_dato": "categorico",
+      "obligatorio": true,
+      "valores_admisibles": ["rendimiento_kg_ha"]
+    },
+    {
+      "nombre_canonico": "valor",
+      "descripcion": "Valor numerico generico observado",
+      "tipo_dato": "real",
+      "obligatorio": true,
+      "rango": { "min": 0, "max": 10000 }
+    }
+  ],
+  "reglas_cruzadas": []
+}

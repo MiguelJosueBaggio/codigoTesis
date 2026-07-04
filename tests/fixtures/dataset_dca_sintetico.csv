@@ -1,0 +1,13 @@
+codigo_ensayo,ambiente,tratamiento,id_unidad,variable,valor
+E-DCA-01,Campo1,A,U1,rendimiento,10.0
+E-DCA-01,Campo1,A,U2,rendimiento,11.0
+E-DCA-01,Campo1,A,U3,rendimiento,9.0
+E-DCA-01,Campo1,A,U4,rendimiento,12.0
+E-DCA-01,Campo1,B,U5,rendimiento,20.0
+E-DCA-01,Campo1,B,U6,rendimiento,19.0
+E-DCA-01,Campo1,B,U7,rendimiento,21.0
+E-DCA-01,Campo1,B,U8,rendimiento,22.0
+E-DCA-01,Campo1,C,U9,rendimiento,15.0
+E-DCA-01,Campo1,C,U10,rendimiento,14.0
+E-DCA-01,Campo1,C,U11,rendimiento,16.0
+E-DCA-01,Campo1,C,U12,rendimiento,17.0

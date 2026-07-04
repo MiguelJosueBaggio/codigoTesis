@@ -1,0 +1,78 @@
+{
+  "name": "Escalamiento: Notificacion Humana",
+  "meta": {
+    "description": "Error workflow (D-6, change n8n-orchestration-workflows / C-08): se activa cuando 'Pipeline Principal' termina con Stop and Error (fallo persistente tras agotar reintentos, RN-GLB-03). Registra el payload estructurado de escalamiento y deja un nodo Telegram DESHABILITADO como enganche documentado y ejecutable del canal real que C-13 activara/configurara (RBAC, chat ids, credenciales -- fuera de scope de C-08). Ningun dato sale de la maquina en este change."
+  },
+  "nodes": [
+    {
+      "id": "error-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "registrar-payload-escalamiento",
+      "name": "Registrar Payload de Escalamiento",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [220, 0],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "etapa",
+              "type": "string",
+              "value": "={{$json.execution.data.resultData.error.node.name}}"
+            },
+            {
+              "name": "run_id",
+              "type": "string",
+              "value": "={{$json.execution.id}}"
+            },
+            {
+              "name": "mensaje_error",
+              "type": "string",
+              "value": "={{$json.execution.data.resultData.error.message}}"
+            },
+            {
+              "name": "workflow_fallido",
+              "type": "string",
+              "value": "={{$json.workflow.name}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "notificar-telegram-c13",
+      "name": "Notificar via Telegram (placeholder C-13)",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [440, 0],
+      "disabled": true,
+      "notes": "DESHABILITADO a proposito (D-6): documenta el punto de enganche exacto que C-13 activara -- credenciales del bot, chat id destino y formato final del mensaje son responsabilidad de C-13 (DD-09), no de este change.",
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$env.TELEGRAM_CHAT_ID_INGENIERO}}",
+        "text": "=Escalamiento en '{{$json.workflow_fallido}}' (run {{$json.run_id}}): {{$json.mensaje_error}}"
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Registrar Payload de Escalamiento", "type": "main", "index": 0 }]]
+    },
+    "Registrar Payload de Escalamiento": {
+      "main": [[{ "node": "Notificar via Telegram (placeholder C-13)", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionOrder": "v1"
+  }
+}

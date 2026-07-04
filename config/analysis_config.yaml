@@ -1,0 +1,5 @@
+# Placeholder vacio creado por foundation-setup (C-01).
+# El contenido real (parametros del analisis estadistico: alfa, diseno
+# de bloqueo, variables de respuesta, etc.) lo define el change C-07
+# statistical-analysis-module. Este archivo no contiene definiciones
+# de dominio; existe solo para reservar la ruta que consumira C-07.
