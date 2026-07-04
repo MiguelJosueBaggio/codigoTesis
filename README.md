@@ -114,7 +114,26 @@ para el runbook completo de verificación en 3 capas).
    con aislamiento estricto). Verificado el 2026-07-03 con pnpm 11.3 y
    n8n 2.29.3.
 
-2. Arrancar n8n (`n8n start`), abrir `http://localhost:5678`.
+2. Arrancar n8n con los nodos que el pipeline necesita habilitados
+   (n8n 2.x **excluye por defecto** `executeCommand` y
+   `localFileTrigger` — sin esto los workflows fallan con
+   "Unrecognized node type"):
+
+   ```bash
+   NODES_EXCLUDE="[]" \
+   NODE_FUNCTION_ALLOW_BUILTIN="crypto,fs" \
+   N8N_BLOCK_ENV_ACCESS_IN_NODE=false \
+   PYTHON_BIN="<ruta-absoluta>/.venv/Scripts/python.exe" \
+   PIPELINE_CARPETA_ENTRADA="<ruta-absoluta>/entrada" \
+   PIPELINE_CARPETA_CORRIDAS="<ruta-absoluta>/corridas" \
+   PIPELINE_REINTENTOS_MAX=3 PIPELINE_BACKOFF_BASE_SEGUNDOS=5 \
+   DATABASE_URL="sqlite:///<ruta-absoluta>/datos/ensayos.db" \
+   n8n start
+   ```
+
+   Abrir `http://localhost:5678`. Habilitar `executeCommand` es seguro
+   acá: la instancia es local y su único propósito es invocar las CLIs
+   del pipeline (DD-05).
 
 3. Importar los tres JSON de `n8n_workflows/` (menú → Import from file):
    `pipeline_principal`, `ejecutar_etapa_con_reintentos`,

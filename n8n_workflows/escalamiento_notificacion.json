@@ -1,4 +1,5 @@
 {
+  "id": "escalamiento_notificacion",
   "name": "Escalamiento: Notificacion Humana",
   "meta": {
     "description": "Error workflow (D-6, change n8n-orchestration-workflows / C-08): se activa cuando 'Pipeline Principal' termina con Stop and Error (fallo persistente tras agotar reintentos, RN-GLB-03). Registra el payload estructurado de escalamiento y deja un nodo Telegram DESHABILITADO como enganche documentado y ejecutable del canal real que C-13 activara/configurara (RBAC, chat ids, credenciales -- fuera de scope de C-08). Ningun dato sale de la maquina en este change."
@@ -9,37 +10,47 @@
       "name": "Error Trigger",
       "type": "n8n-nodes-base.errorTrigger",
       "typeVersion": 1,
-      "position": [0, 0],
+      "position": [
+        0,
+        0
+      ],
       "parameters": {}
     },
     {
       "id": "registrar-payload-escalamiento",
       "name": "Registrar Payload de Escalamiento",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [220, 0],
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        0
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
             {
               "name": "etapa",
               "type": "string",
-              "value": "={{$json.execution.data.resultData.error.node.name}}"
+              "value": "={{$json.execution.data.resultData.error.node.name}}",
+              "id": "d8c56378-2de5-4d89-afd4-0e729439564f"
             },
             {
               "name": "run_id",
               "type": "string",
-              "value": "={{$json.execution.id}}"
+              "value": "={{$json.execution.id}}",
+              "id": "867014f2-f2f1-473f-a353-b565e5ba9bf6"
             },
             {
               "name": "mensaje_error",
               "type": "string",
-              "value": "={{$json.execution.data.resultData.error.message}}"
+              "value": "={{$json.execution.data.resultData.error.message}}",
+              "id": "0428ea62-96f3-4d78-aa0a-2c152025b139"
             },
             {
               "name": "workflow_fallido",
               "type": "string",
-              "value": "={{$json.workflow.name}}"
+              "value": "={{$json.workflow.name}}",
+              "id": "9aa356ed-679e-4b7e-a513-647249348150"
             }
           ]
         }
@@ -50,7 +61,10 @@
       "name": "Notificar via Telegram (placeholder C-13)",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [440, 0],
+      "position": [
+        440,
+        0
+      ],
       "disabled": true,
       "notes": "DESHABILITADO a proposito (D-6): documenta el punto de enganche exacto que C-13 activara -- credenciales del bot, chat id destino y formato final del mensaje son responsabilidad de C-13 (DD-09), no de este change.",
       "parameters": {
@@ -63,10 +77,26 @@
   ],
   "connections": {
     "Error Trigger": {
-      "main": [[{ "node": "Registrar Payload de Escalamiento", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Registrar Payload de Escalamiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Registrar Payload de Escalamiento": {
-      "main": [[{ "node": "Notificar via Telegram (placeholder C-13)", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Notificar via Telegram (placeholder C-13)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +183,53 @@ class TestPipelinePrincipal:
         nodos_execute_workflow = _nodos_por_tipo(workflow, "n8n-nodes-base.executeWorkflow")
         assert len(nodos_execute_workflow) >= len(ETAPAS_OBLIGATORIAS)
 
+    def test_trigger_de_archivo_no_observa_subcarpetas(self):
+        """Fix post-C-08 (bug #4, verificado en corrida real): el
+        localFileTrigger observaba `entrada/` RECURSIVAMENTE -- mover el
+        archivo a procesados/ al final del pipeline disparaba OTRO evento
+        'add' y el flujo se retroalimentaba en loop (los prefijos run_id se
+        acumulaban en el nombre hasta superar MAX_PATH de Windows). El
+        trigger debe observar SOLO el nivel raiz (depth=0, 'Top Folder
+        Only')."""
+        workflow = _cargar(RUTA_PRINCIPAL)
+        triggers = _nodos_por_tipo(workflow, "n8n-nodes-base.localFileTrigger")
+
+        assert triggers
+        for trigger in triggers:
+            assert trigger["parameters"].get("options", {}).get("depth") == 0
+
+    def test_normalizar_ignora_eventos_de_subcarpetas(self):
+        """Fix post-C-08 (bug #4, defensa en profundidad): aunque el trigger
+        vuelva a observar subcarpetas (p. ej. si alguien toca depth en la
+        UI), 'Normalizar Entrada del Archivo' solo acepta rutas que viven
+        DIRECTO en PIPELINE_CARPETA_ENTRADA; un evento de procesados/ o
+        errores/ cae al barrido de la raiz."""
+        workflow = _cargar(RUTA_PRINCIPAL)
+        nodo = next(n for n in workflow["nodes"] if "Normalizar" in n["name"])
+        codigo = nodo["parameters"]["jsCode"]
+
+        assert "esRutaDirectaDeEntrada" in codigo
+
+    def test_etapas_y_movimientos_referencian_contexto_del_nodo_normalizar(self):
+        """Fix post-C-08: la salida del sub-workflow de reintentos es
+        {status, stdout} -- NO trae run_id/corrida_dir/ruta_archivo.
+        Referenciarlos via `$json` armaba comandos con rutas vacias
+        (validacion llego a correr con `--output-dir \"\"`). Todo nodo aguas
+        abajo debe tomar el contexto de $('Normalizar Entrada del
+        Archivo')."""
+        workflow = _cargar(RUTA_PRINCIPAL)
+
+        nodos_a_verificar = _nodos_por_tipo(workflow, "n8n-nodes-base.executeWorkflow") + [
+            n
+            for n in workflow["nodes"]
+            if n["type"] == "n8n-nodes-base.executeCommand"
+        ]
+        for nodo in nodos_a_verificar:
+            texto = json.dumps(nodo["parameters"])
+            assert "$('Normalizar Entrada del Archivo')" in texto, nodo["name"]
+            for referencia_rota in ("$json.run_id", "$json.corrida_dir", "$json.ruta_archivo"):
+                assert referencia_rota not in texto, f"{nodo['name']}: usa {referencia_rota}"
+
 
 class TestSubworkflowReintentos:
     def test_tiene_wait_con_expresion_de_backoff_exponencial(self):
@@ -199,18 +248,56 @@ class TestSubworkflowReintentos:
         texto = _texto_crudo(RUTA_REINTENTOS)
         assert "$env.PIPELINE_REINTENTOS_MAX" in texto
 
-    def test_execute_command_recibe_el_comando_por_parametro_no_hardcodeado(self):
-        """D-1: el Execute Command del sub-workflow ejecuta EXACTAMENTE el
-        comando que le paso el workflow principal (`$json.comando`) -- una
-        sola implementacion generica de la politica de reintentos, sin
-        acoplarse a ninguna etapa en particular."""
+    def test_execute_command_ejecuta_via_wrapper_que_nunca_sale_no_cero(self):
+        """D-1/D-4 (fix post-C-08): Execute Command de n8n hace THROW cuando
+        el proceso sale con exit code != 0 (verificado en
+        ExecuteCommand.node.js) -- con `$json.comando` directo la
+        clasificacion 0/1/2 del Switch jamas veia un codigo distinto de 0.
+        El contrato nuevo: el comando de la etapa se escribe a un archivo en
+        el directorio de corrida (`$json.archivo_comando`) y un wrapper
+        `python -c` lo ejecuta con subprocess.run(shell=True), sale SIEMPRE 0
+        e imprime JSON {exitCode, stdout, stderr} por stdout."""
         workflow = _cargar(RUTA_REINTENTOS)
         nodos_comando = _nodos_por_tipo(workflow, "n8n-nodes-base.executeCommand")
 
         assert nodos_comando
         texto_parametros = json.dumps([n["parameters"] for n in nodos_comando])
-        assert "$json.comando" in texto_parametros
+        assert "$json.archivo_comando" in texto_parametros
+        assert "subprocess.run" in texto_parametros
         assert "pipeline." not in texto_parametros  # generico, no acoplado a una etapa
+
+        # El archivo de comando se escribe desde el parametro `comando` que
+        # paso el workflow principal -- el contrato D-1 sigue vigente.
+        texto = _texto_crudo(RUTA_REINTENTOS)
+        assert "$json.comando" in texto
+
+    def test_incrementar_intento_conserva_el_contexto_del_loop(self):
+        """Fix post-C-08: el Set 'Incrementar Intento' solo emitia `intento`
+        -- en el reintento, 'Ejecutar Comando' perdia comando/etapa/run_id.
+        Debe incluir los campos de entrada."""
+        workflow = _cargar(RUTA_REINTENTOS)
+        nodo = next(n for n in workflow["nodes"] if n["name"] == "Incrementar Intento")
+
+        assert nodo["parameters"].get("includeOtherFields") is True
+
+    def test_resultado_del_wrapper_se_recombina_con_el_contexto(self):
+        """Fix post-C-08: la salida de Execute Command ({exitCode, stdout,
+        stderr}) pierde intento/etapa/comando/run_id -- '¿Quedan
+        Reintentos?' leia intento=undefined y escalaba sin reintentar. Un
+        nodo Code entre 'Ejecutar Comando' y 'Evaluar Exit Code' parsea el
+        JSON del wrapper y lo recombina con el contexto del intento."""
+        workflow = _cargar(RUTA_REINTENTOS)
+        conexiones = workflow["connections"]
+
+        destino = conexiones["Ejecutar Comando"]["main"][0][0]["node"]
+        assert destino != "Evaluar Exit Code", "Falta el nodo que recombina contexto"
+
+        nodo = next(n for n in workflow["nodes"] if n["name"] == destino)
+        codigo = nodo["parameters"]["jsCode"]
+        assert "JSON.parse" in codigo
+        assert "$('Inicializar Intento')" in codigo  # contexto del primer intento
+        assert "$('Incrementar Intento')" in codigo  # contexto de los reintentos
+        assert conexiones[destino]["main"][0][0]["node"] == "Evaluar Exit Code"
 
     def test_switch_de_exit_code_distingue_los_tres_casos(self):
         """D-4: el sub-workflow enruta explicitamente sobre `exitCode` (0/1/2)
@@ -222,6 +309,133 @@ class TestSubworkflowReintentos:
         assert nodos_switch
         texto_parametros = json.dumps([n["parameters"] for n in nodos_switch])
         assert "exitCode" in texto_parametros
+
+
+def _extraer_codigo_python_c(comando_nodo: str) -> str:
+    """Extrae el codigo `-c \"...\"` de un comando de nodo executeCommand.
+
+    Los tests de comportamiento ejecutan ESE codigo (el mismo que corre n8n)
+    con el interprete local, sustituyendo las expresiones {{...}} -- se
+    ejercita la logica real sin fingir un runtime n8n (D-9)."""
+    coincidencia = re.search(r'-c "(.*)"$', comando_nodo)
+    assert coincidencia, f"El comando no tiene la forma `-c \"...\"`: {comando_nodo}"
+    return coincidencia.group(1)
+
+
+class TestWrapperDeEjecucionComportamiento:
+    """Ejecuta de verdad el wrapper del nodo 'Ejecutar Comando' (fix
+    post-C-08): siempre sale 0 y reporta el exitCode real en JSON."""
+
+    def _codigo_wrapper(self, archivo_comando: Path) -> str:
+        workflow = _cargar(RUTA_REINTENTOS)
+        nodo = _nodos_por_tipo(workflow, "n8n-nodes-base.executeCommand")[0]
+        codigo = _extraer_codigo_python_c(nodo["parameters"]["command"])
+        return codigo.replace("{{$json.archivo_comando}}", str(archivo_comando))
+
+    def _correr_wrapper(self, tmp_path: Path, comando_interno: str) -> dict:
+        archivo_comando = tmp_path / "comando_etapa.txt"
+        archivo_comando.write_text(comando_interno, encoding="utf-8")
+        resultado = subprocess.run(
+            [sys.executable, "-c", self._codigo_wrapper(archivo_comando)],
+            capture_output=True,
+            text=True,
+        )
+        assert resultado.returncode == 0, (
+            f"El wrapper DEBE salir siempre 0 (salio {resultado.returncode}): "
+            f"{resultado.stderr}"
+        )
+        return json.loads(resultado.stdout)
+
+    def test_exit_code_no_cero_se_reporta_sin_romper_el_nodo(self, tmp_path):
+        payload = self._correr_wrapper(
+            tmp_path,
+            f'"{sys.executable}" -c "import sys; sys.stdout.write(str(21 * 2)); sys.exit(2)"',
+        )
+        assert payload["exitCode"] == 2
+        assert "42" in payload["stdout"]
+
+    def test_exit_cero_conserva_stdout_y_stderr(self, tmp_path):
+        payload = self._correr_wrapper(
+            tmp_path,
+            f'"{sys.executable}" -c "import sys; sys.stdout.write(str(6 * 7)); sys.stderr.write(str(9))"',
+        )
+        assert payload["exitCode"] == 0
+        assert "42" in payload["stdout"]
+        assert "9" in payload["stderr"]
+
+
+class TestMoverArchivoComportamiento:
+    """Ejecuta de verdad los comandos de 'Mover Archivo a Procesados' /
+    'Mover Archivo a Errores' (fix post-C-08): con un archivo homonimo ya
+    presente en el destino, NO pisa ni borra -- mueve con sufijo run_id."""
+
+    def _codigo_mover(self, nombre_nodo: str, ruta_archivo: Path, entrada: Path) -> str:
+        workflow = _cargar(RUTA_PRINCIPAL)
+        nodo = next(n for n in workflow["nodes"] if n["name"] == nombre_nodo)
+        codigo = _extraer_codigo_python_c(nodo["parameters"]["command"])
+        return (
+            codigo.replace(
+                "{{$('Normalizar Entrada del Archivo').first().json.ruta_archivo}}",
+                str(ruta_archivo),
+            )
+            .replace(
+                "{{$('Normalizar Entrada del Archivo').first().json.run_id}}",
+                "20260704T000000Z_abcd1234",
+            )
+            .replace("{{$env.PIPELINE_CARPETA_ENTRADA}}", str(entrada))
+        )
+
+    @pytest.mark.parametrize(
+        ("nombre_nodo", "subcarpeta"),
+        [
+            ("Mover Archivo a Procesados", "procesados"),
+            ("Mover Archivo a Errores", "errores"),
+        ],
+    )
+    def test_mueve_sin_colision(self, tmp_path, nombre_nodo, subcarpeta):
+        entrada = tmp_path / "entrada"
+        entrada.mkdir()
+        archivo = entrada / "demo.csv"
+        archivo.write_text("contenido nuevo", encoding="utf-8")
+
+        resultado = subprocess.run(
+            [sys.executable, "-c", self._codigo_mover(nombre_nodo, archivo, entrada)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert resultado.returncode == 0, resultado.stderr
+        assert not archivo.exists()
+        assert (entrada / subcarpeta / "demo.csv").read_text(encoding="utf-8") == "contenido nuevo"
+
+    @pytest.mark.parametrize(
+        ("nombre_nodo", "subcarpeta"),
+        [
+            ("Mover Archivo a Procesados", "procesados"),
+            ("Mover Archivo a Errores", "errores"),
+        ],
+    )
+    def test_con_homonimo_en_destino_no_pisa_ni_borra(self, tmp_path, nombre_nodo, subcarpeta):
+        entrada = tmp_path / "entrada"
+        destino = entrada / subcarpeta
+        destino.mkdir(parents=True)
+        (destino / "demo.csv").write_text("resto de corrida previa", encoding="utf-8")
+        archivo = entrada / "demo.csv"
+        archivo.write_text("contenido nuevo", encoding="utf-8")
+
+        resultado = subprocess.run(
+            [sys.executable, "-c", self._codigo_mover(nombre_nodo, archivo, entrada)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert resultado.returncode == 0, resultado.stderr
+        assert not archivo.exists()
+        # El homonimo previo queda intacto; el nuevo entra con sufijo run_id.
+        assert (destino / "demo.csv").read_text(encoding="utf-8") == "resto de corrida previa"
+        assert (
+            destino / "20260704T000000Z_abcd1234_demo.csv"
+        ).read_text(encoding="utf-8") == "contenido nuevo"
 
 
 class TestEscalamientoNotificacion:

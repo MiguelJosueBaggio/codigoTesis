@@ -1,4 +1,5 @@
 {
+  "id": "ejecutar_etapa_con_reintentos",
   "name": "Ejecutar Etapa Con Reintentos",
   "meta": {
     "description": "Sub-workflow generico de reintentos (D-5, change n8n-orchestration-workflows / C-08). Recibe UN comando de shell (parametro 'comando', armado por el workflow principal con `{{$env.PYTHON_BIN}} -m pipeline.<etapa>`), lo ejecuta, y clasifica el exitCode (D-4: 0 exito / 1 error de dominio, no se reintenta / 2 fallo transitorio de infraestructura, se reintenta con backoff exponencial real `base * 2^intento`, distinto del `retryOnFail` nativo de intervalo fijo). Una sola implementacion de la politica para las 5 etapas -- ninguna logica de pipeline.* vive aca, solo orquestacion (DD-05: n8n nunca importa Python)."
@@ -8,14 +9,23 @@
       "id": "trigger-recibir-comando",
       "name": "Trigger: Recibir Comando",
       "type": "n8n-nodes-base.executeWorkflowTrigger",
-      "typeVersion": 1,
-      "position": [0, 200],
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        200
+      ],
       "parameters": {
         "workflowInputs": {
           "values": [
-            { "name": "etapa" },
-            { "name": "comando" },
-            { "name": "run_id" }
+            {
+              "name": "etapa"
+            },
+            {
+              "name": "comando"
+            },
+            {
+              "name": "run_id"
+            }
           ]
         }
       }
@@ -23,29 +33,46 @@
     {
       "id": "inicializar-intento",
       "name": "Inicializar Intento",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [220, 200],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
       "parameters": {
-        "assignments": {
-          "assignments": [
-            { "name": "intento", "type": "number", "value": "=0" },
-            { "name": "etapa", "type": "string", "value": "={{$json.etapa}}" },
-            { "name": "comando", "type": "string", "value": "={{$json.comando}}" },
-            { "name": "run_id", "type": "string", "value": "={{$json.run_id}}" }
-          ]
-        }
-      }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const fs = require('fs');\n// Contexto del intento (D-5) + fix post-C-08: el comando de la etapa se\n// escribe a un archivo dentro del directorio de corrida para que el wrapper\n// de 'Ejecutar Comando' lo lea de ahi -- cero interpolacion del comando en\n// la linea de shell, y el comando exacto queda auditado en la corrida.\nconst corridaDir = $env.PIPELINE_CARPETA_CORRIDAS + '/' + $json.run_id;\nfs.mkdirSync(corridaDir, { recursive: true });\nconst archivoComando = corridaDir + '/comando_' + $json.etapa + '.txt';\nfs.writeFileSync(archivoComando, String($json.comando), 'utf8');\nreturn {\n  json: {\n    intento: 0,\n    etapa: $json.etapa,\n    comando: $json.comando,\n    run_id: $json.run_id,\n    archivo_comando: archivoComando,\n  },\n};"
+      },
+      "notes": "D-5 + fix post-C-08: inicializa intento=0 y escribe el comando a un archivo del directorio de corrida ($json.archivo_comando) que consume el wrapper de 'Ejecutar Comando'."
     },
     {
       "id": "ejecutar-comando",
       "name": "Ejecutar Comando",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [440, 200],
+      "position": [
+        440,
+        200
+      ],
       "continueOnFail": true,
       "parameters": {
-        "command": "={{$json.comando}}"
+        "command": "={{$env.PYTHON_BIN}} -c \"import json, subprocess; cmd = open(r'{{$json.archivo_comando}}', encoding='utf-8').read(); r = subprocess.run(cmd, shell=True, capture_output=True, encoding='utf-8', errors='replace'); print(json.dumps({'exitCode': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr}))\""
+      },
+      "notes": "Fix post-C-08: Execute Command de n8n hace throw con exit code != 0 (la clasificacion D-4 nunca veia codigos != 0). El wrapper ejecuta el comando de la etapa via subprocess.run(shell=True), sale SIEMPRE 0 e imprime JSON {exitCode, stdout, stderr} por stdout; 'Interpretar Resultado' lo parsea."
+    },
+    {
+      "id": "interpretar-resultado",
+      "name": "Interpretar Resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "notes": "Fix post-C-08: recombina el resultado del wrapper con el contexto del intento (Execute Command no lo propaga).",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Fix post-C-08: Execute Command solo devuelve exitCode/stdout/stderr (o un\n// item {error} si el propio wrapper fallo) -- nunca el contexto del intento.\n// Aca se parsea el JSON que imprimio el wrapper y se recombina con\n// etapa/comando/run_id/intento para el Switch y el loop de reintentos.\nconst salida = $input.first().json;\nlet contexto;\ntry {\n  contexto = $('Incrementar Intento').first().json; // reintentos: intento ya incrementado\n} catch (e) {\n  contexto = $('Inicializar Intento').first().json; // primer intento\n}\nlet resultado;\nif (salida.stdout === undefined && salida.error !== undefined) {\n  // El propio wrapper fallo (p. ej. PYTHON_BIN invalido): transitorio.\n  resultado = { exitCode: 2, stdout: '', stderr: String(salida.error) };\n} else {\n  try {\n    resultado = JSON.parse(salida.stdout);\n  } catch (e) {\n    resultado = {\n      exitCode: 2,\n      stdout: String(salida.stdout ?? ''),\n      stderr: 'Salida del wrapper no parseable: ' + String(salida.stderr || e.message),\n    };\n  }\n}\nreturn [{\n  json: {\n    ...contexto,\n    exitCode: Number(resultado.exitCode),\n    stdout: String(resultado.stdout ?? ''),\n    stderr: String(resultado.stderr ?? ''),\n  },\n}];"
       }
     },
     {
@@ -53,7 +80,10 @@
       "name": "Evaluar Exit Code",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3,
-      "position": [660, 200],
+      "position": [
+        880,
+        200
+      ],
       "parameters": {
         "mode": "rules",
         "rules": {
@@ -66,7 +96,10 @@
                   {
                     "leftValue": "={{$json.exitCode}}",
                     "rightValue": 0,
-                    "operator": { "type": "number", "operation": "equals" }
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
                   }
                 ]
               }
@@ -79,7 +112,10 @@
                   {
                     "leftValue": "={{$json.exitCode}}",
                     "rightValue": 1,
-                    "operator": { "type": "number", "operation": "equals" }
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
                   }
                 ]
               }
@@ -92,27 +128,45 @@
                   {
                     "leftValue": "={{$json.exitCode}}",
                     "rightValue": 2,
-                    "operator": { "type": "number", "operation": "equals" }
+                    "operator": {
+                      "type": "number",
+                      "operation": "equals"
+                    }
                   }
                 ]
               }
             }
           ]
         },
-        "options": { "fallbackOutput": "transitorio" }
+        "options": {
+          "fallbackOutput": 2
+        }
       }
     },
     {
       "id": "salida-ok",
       "name": "Salida: OK",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [900, 0],
+      "typeVersion": 3.4,
+      "position": [
+        1120,
+        0
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
-            { "name": "status", "type": "string", "value": "=ok" },
-            { "name": "stdout", "type": "string", "value": "={{$json.stdout}}" }
+            {
+              "name": "status",
+              "type": "string",
+              "value": "ok",
+              "id": "3aeaed5d-da3f-47bd-969c-f8b733e35801"
+            },
+            {
+              "name": "stdout",
+              "type": "string",
+              "value": "={{$json.stdout}}",
+              "id": "7f76faa9-6fa4-4927-b381-6c5a9430185a"
+            }
           ]
         }
       }
@@ -121,13 +175,26 @@
       "id": "salida-error-dominio",
       "name": "Salida: Error de Dominio",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [900, 150],
+      "typeVersion": 3.4,
+      "position": [
+        1120,
+        150
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
-            { "name": "status", "type": "string", "value": "=error_dominio" },
-            { "name": "stderr", "type": "string", "value": "={{$json.stderr}}" }
+            {
+              "name": "status",
+              "type": "string",
+              "value": "error_dominio",
+              "id": "352adc60-2f78-448b-838a-20970500841b"
+            },
+            {
+              "name": "stderr",
+              "type": "string",
+              "value": "={{$json.stderr}}",
+              "id": "68a18a90-985f-4bcb-a05d-d28ca5747525"
+            }
           ]
         }
       }
@@ -137,7 +204,10 @@
       "name": "¿Quedan Reintentos?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [900, 350],
+      "position": [
+        1120,
+        350
+      ],
       "parameters": {
         "conditions": {
           "combinator": "and",
@@ -145,7 +215,10 @@
             {
               "leftValue": "={{$json.intento}}",
               "rightValue": "={{Number($env.PIPELINE_REINTENTOS_MAX)}}",
-              "operator": { "type": "number", "operation": "lt" }
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
             }
           ]
         }
@@ -156,7 +229,10 @@
       "name": "Esperar Backoff Exponencial",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [1120, 300],
+      "position": [
+        1340,
+        300
+      ],
       "parameters": {
         "resume": "timeInterval",
         "unit": "seconds",
@@ -167,32 +243,79 @@
       "id": "incrementar-intento",
       "name": "Incrementar Intento",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [1340, 300],
+      "typeVersion": 3.4,
+      "position": [
+        1560,
+        300
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
-            { "name": "intento", "type": "number", "value": "={{$json.intento + 1}}" }
+            {
+              "name": "intento",
+              "type": "number",
+              "value": "={{$json.intento + 1}}",
+              "id": "e93f8f6b-7be8-441a-a56a-c4520e374efe"
+            }
           ]
-        }
+        },
+        "includeOtherFields": true
       }
     },
     {
       "id": "salida-escalamiento",
       "name": "Salida: Escalamiento",
       "type": "n8n-nodes-base.set",
-      "typeVersion": 3,
-      "position": [1120, 450],
+      "typeVersion": 3.4,
+      "position": [
+        1340,
+        450
+      ],
       "parameters": {
         "assignments": {
           "assignments": [
-            { "name": "status", "type": "string", "value": "=escalamiento" },
-            { "name": "etapa", "type": "string", "value": "={{$json.etapa}}" },
-            { "name": "comando", "type": "string", "value": "={{$json.comando}}" },
-            { "name": "run_id", "type": "string", "value": "={{$json.run_id}}" },
-            { "name": "intentos", "type": "number", "value": "={{$json.intento}}" },
-            { "name": "exitCode", "type": "number", "value": "={{$json.exitCode}}" },
-            { "name": "stderr", "type": "string", "value": "={{$json.stderr}}" }
+            {
+              "name": "status",
+              "type": "string",
+              "value": "escalamiento",
+              "id": "af15a886-405d-4449-ac08-cfb52d62d386"
+            },
+            {
+              "name": "etapa",
+              "type": "string",
+              "value": "={{$json.etapa}}",
+              "id": "38f07cc2-552c-4e59-adbc-fe47865f1d62"
+            },
+            {
+              "name": "comando",
+              "type": "string",
+              "value": "={{$json.comando}}",
+              "id": "42b2efea-b71b-468e-9bb7-22fd20d106a7"
+            },
+            {
+              "name": "run_id",
+              "type": "string",
+              "value": "={{$json.run_id}}",
+              "id": "85c1914d-8366-47e4-afdd-8d1b7181e410"
+            },
+            {
+              "name": "intentos",
+              "type": "number",
+              "value": "={{$json.intento}}",
+              "id": "3f02649b-c464-4b8b-9dda-b4e97c9b0289"
+            },
+            {
+              "name": "exitCode",
+              "type": "number",
+              "value": "={{$json.exitCode}}",
+              "id": "a5b51f47-eecb-4318-aa02-3effd0538752"
+            },
+            {
+              "name": "stderr",
+              "type": "string",
+              "value": "={{$json.stderr}}",
+              "id": "e1d0fd6a-783d-4398-a7b4-28ff0c93b748"
+            }
           ]
         }
       }
@@ -200,32 +323,113 @@
   ],
   "connections": {
     "Trigger: Recibir Comando": {
-      "main": [[{ "node": "Inicializar Intento", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Inicializar Intento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Inicializar Intento": {
-      "main": [[{ "node": "Ejecutar Comando", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Ejecutar Comando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Ejecutar Comando": {
-      "main": [[{ "node": "Evaluar Exit Code", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Interpretar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Evaluar Exit Code": {
       "main": [
-        [{ "node": "Salida: OK", "type": "main", "index": 0 }],
-        [{ "node": "Salida: Error de Dominio", "type": "main", "index": 0 }],
-        [{ "node": "¿Quedan Reintentos?", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Salida: OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Salida: Error de Dominio",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Quedan Reintentos?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "¿Quedan Reintentos?": {
       "main": [
-        [{ "node": "Esperar Backoff Exponencial", "type": "main", "index": 0 }],
-        [{ "node": "Salida: Escalamiento", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Esperar Backoff Exponencial",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Salida: Escalamiento",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Esperar Backoff Exponencial": {
-      "main": [[{ "node": "Incrementar Intento", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Incrementar Intento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Incrementar Intento": {
-      "main": [[{ "node": "Ejecutar Comando", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Ejecutar Comando",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar Resultado": {
+      "main": [
+        [
+          {
+            "node": "Evaluar Exit Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
