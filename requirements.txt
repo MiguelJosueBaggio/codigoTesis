@@ -7,6 +7,10 @@ numpy>=1.24
 # Testing
 pytest>=8.0
 
+# Cobertura (change session-engine, C-12, task 8.2 -- verificar 100% del
+# motor de sesiones con pytest-coverage)
+pytest-cov>=5.0
+
 # Andamiaje del pipeline (validacion, visualizacion, persistencia) — change foundation-setup
 # Pin >=1.0,<2.0 confirmado por el change validation-engine (C-04, Decision 4):
 # la linea 0.18.x exige numpy<2 (incompatible con pandas 3 ya en uso); la 1.x

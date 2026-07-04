@@ -407,7 +407,7 @@ C-01 → C-02 → C-03* / C-04* → C-05 → C-06 → C-07 → C-08 → C-10
 | C-09 ai-support-standardization (opcional) | 3 | ALTO | C-05, C-06 | `[ ]` |
 | C-10 case-study-evaluation | 4 | CRITICO | C-08 | `[ ]` ⚠ BLOQUEADO |
 | C-11 ocr-field-capture (opcional) | 1 | MEDIO | C-02, C-03 | `[ ]` |
-| C-12 session-engine (opcional) | 3 | MEDIO | C-06 | `[ ]` |
+| C-12 session-engine (opcional) | 3 | MEDIO | C-06 | `[x]` |
 | C-13 telegram-interaction-layer (opcional) | 3 | ALTO | C-08, C-12 | `[ ]` |
 
 **Camino crítico**: 9 changes (C-01, C-02, C-03, C-04, C-05, C-06, C-07, C-08, C-10 — C-09, C-11, C-12 y C-13 son opcionales, fuera del camino crítico).

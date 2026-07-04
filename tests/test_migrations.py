@@ -30,6 +30,8 @@ _TABLAS_ESPERADAS = {
     "bitacora_transformacion",
 }
 
+_TABLAS_SESION_ESPERADAS = {"sesion", "config_paso_sesion", "evento_sesion"}
+
 
 def _alembic_config(database_url: str) -> Config:
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
@@ -71,6 +73,66 @@ def test_migracion_downgrade_elimina_las_siete_tablas(tmp_path, monkeypatch):
         engine.dispose()
 
     assert tablas == set()
+
+
+def test_migracion_0002_crea_las_tres_tablas_de_sesion_en_sqlite(tmp_path, monkeypatch):
+    """Change session-engine (C-12): migracion `0002` extiende el esquema
+    de `0001` con las tablas del motor de sesiones, sin tocarlo."""
+    db_path = tmp_path / "migracion_sesion.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLAS_ESPERADAS <= tablas
+    assert _TABLAS_SESION_ESPERADAS <= tablas
+
+
+def test_migracion_0002_paridad_con_base_metadata(tmp_path, monkeypatch):
+    """La migracion 0002 (artefacto versionado) debe crear el MISMO conjunto
+    de tablas que `Base.metadata` (fuente unica del esquema, DD-11)."""
+    from pipeline.models import Base
+
+    db_path = tmp_path / "migracion_paridad.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas_migracion = set(sa.inspect(engine).get_table_names()) - {"alembic_version"}
+    finally:
+        engine.dispose()
+
+    assert tablas_migracion == set(Base.metadata.tables.keys())
+
+
+def test_migracion_downgrade_a_0001_elimina_solo_las_tablas_de_sesion(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_sesion_downgrade.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0001")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLAS_ESPERADAS <= tablas
+    assert not (_TABLAS_SESION_ESPERADAS & tablas)
 
 
 @pytest.mark.skipif(
