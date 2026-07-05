@@ -27,6 +27,7 @@ WORKFLOWS_DIR = Path(__file__).parent.parent / "n8n_workflows"
 RUTA_PRINCIPAL = WORKFLOWS_DIR / "pipeline_principal.json"
 RUTA_REINTENTOS = WORKFLOWS_DIR / "ejecutar_etapa_con_reintentos.json"
 RUTA_ESCALAMIENTO = WORKFLOWS_DIR / "escalamiento_notificacion.json"
+RUTA_INTERACCION = WORKFLOWS_DIR / "interaccion_telegram.json"
 
 ETAPAS_OBLIGATORIAS = ("ingestion", "validation", "transformation", "persistence")
 
@@ -81,8 +82,8 @@ def _bfs_nombres_alcanzables(workflow: dict, origen: str) -> list:
 
 
 class TestArchivosExisten:
-    def test_los_tres_workflows_existen_y_son_json_valido(self):
-        for ruta in (RUTA_PRINCIPAL, RUTA_REINTENTOS, RUTA_ESCALAMIENTO):
+    def test_los_cuatro_workflows_existen_y_son_json_valido(self):
+        for ruta in (RUTA_PRINCIPAL, RUTA_REINTENTOS, RUTA_ESCALAMIENTO, RUTA_INTERACCION):
             assert ruta.exists(), f"Falta el export {ruta}"
             _cargar(ruta)  # no debe levantar json.JSONDecodeError
 
@@ -443,14 +444,16 @@ class TestEscalamientoNotificacion:
         workflow = _cargar(RUTA_ESCALAMIENTO)
         assert _nodos_por_tipo(workflow, "n8n-nodes-base.errorTrigger")
 
-    def test_nodo_telegram_esta_deshabilitado_como_enganche_documentado_c13(self):
-        """D-6: el canal Telegram es C-13 (fuera de scope) -- el nodo queda
-        como documentacion ejecutable del punto de enganche, deshabilitado."""
+    def test_nodo_telegram_existe(self):
+        """D-6 (C-08): el nodo Telegram del error-workflow existe. Su estado
+        `disabled` cambio de `True` (enganche documentado de C-08) a `False`
+        en el change telegram-interaction-layer (C-13, D-7) -- ver
+        `TestEscalamientoTelegramHabilitado` mas abajo, que verifica el
+        `disabled: false` post-C-13 explicitamente."""
         workflow = _cargar(RUTA_ESCALAMIENTO)
         nodos_telegram = _nodos_por_tipo(workflow, "n8n-nodes-base.telegram")
 
         assert nodos_telegram
-        assert all(n.get("disabled") is True for n in nodos_telegram)
 
 
 class TestAntiDivergenciaConElE2e:
@@ -485,7 +488,9 @@ class TestAntiDivergenciaConElE2e:
 
 
 class TestSinRutasAbsolutasNiCredenciales:
-    @pytest.mark.parametrize("ruta", [RUTA_PRINCIPAL, RUTA_REINTENTOS, RUTA_ESCALAMIENTO])
+    @pytest.mark.parametrize(
+        "ruta", [RUTA_PRINCIPAL, RUTA_REINTENTOS, RUTA_ESCALAMIENTO, RUTA_INTERACCION]
+    )
     def test_ningun_export_contiene_ruta_absoluta_ni_credencial(self, ruta):
         """D-10: cero rutas absolutas de esta maquina, cero credenciales --
         todo por variables de entorno, documentado en `.env.example`."""
@@ -495,3 +500,124 @@ class TestSinRutasAbsolutasNiCredenciales:
             assert patron not in texto, f"Ruta absoluta prohibida '{patron}' en {ruta.name}"
         for patron in _PATRONES_CREDENCIAL_PROHIBIDOS:
             assert patron not in texto, f"Posible credencial '{patron}' en {ruta.name}"
+
+
+class TestInteraccionTelegram:
+    """Change telegram-interaction-layer (C-13), grupo 5 del tasks.md, D-3:
+    UN UNICO loop generico -- se testea como DATOS (D-9), nunca contra un
+    runtime n8n real."""
+
+    def test_tiene_telegram_trigger_y_al_menos_un_envio(self):
+        """5.1: Telegram Trigger (mensajes + callbacks) y al menos un nodo
+        Telegram de envio."""
+        workflow = _cargar(RUTA_INTERACCION)
+
+        assert _nodos_por_tipo(workflow, "n8n-nodes-base.telegramTrigger")
+        assert _nodos_por_tipo(workflow, "n8n-nodes-base.telegram")
+
+    def test_invoca_session_cli_por_execute_command(self):
+        """5.1/5.2: el grafo invoca `pipeline.session_cli` via Execute
+        Command (DD-05) -- nunca un import de Python."""
+        workflow = _cargar(RUTA_INTERACCION)
+        texto = _texto_crudo(RUTA_INTERACCION)
+
+        assert _nodos_por_tipo(workflow, "n8n-nodes-base.executeCommand")
+        assert "pipeline.session_cli" in texto
+        assert "import pipeline" not in texto
+        assert "from pipeline" not in texto
+
+    def test_tiene_wait_for_webhook(self):
+        """5.1/5.4: mecanismo de pausa/reanudacion human-in-the-loop (D-5)."""
+        workflow = _cargar(RUTA_INTERACCION)
+        nodos_wait = _nodos_por_tipo(workflow, "n8n-nodes-base.wait")
+
+        assert nodos_wait
+        assert any(n["parameters"].get("resume") == "webhook" for n in nodos_wait)
+
+    def test_nodo_ocr_c11_existe_y_esta_deshabilitado(self):
+        """5.3: enganche C-11 documentado y deshabilitado (D-6) -- mismo
+        patron que el nodo Telegram disabled de C-08."""
+        workflow = _cargar(RUTA_INTERACCION)
+        nodo_ocr = next(
+            n for n in workflow["nodes"] if "ocr" in n["name"].lower() and "c-11" in n["name"].lower()
+        )
+
+        assert nodo_ocr["disabled"] is True
+
+    def test_router_no_ramifica_por_tipo_sesion(self):
+        """5.2/5.5 TRIANGULATE: el Switch central decide por el RESULTADO
+        del CLI (autorizado/valido/completada), nunca por `tipo_sesion` --
+        agregar un paso a `config_paso_sesion` no toca este grafo (D-3)."""
+        workflow = _cargar(RUTA_INTERACCION)
+        nodo_router = next(
+            n for n in workflow["nodes"] if n["type"] == "n8n-nodes-base.switch"
+        )
+        texto_reglas = json.dumps(nodo_router["parameters"])
+
+        assert "tipo_sesion" not in texto_reglas
+        assert "autorizado" in texto_reglas or "completada" in texto_reglas or "valido" in texto_reglas
+
+    def test_par_mensaje_botones_antes_del_wait(self):
+        """5.4: el nodo que envia el mensaje con botones inline esta
+        conectado inmediatamente antes del Wait for Webhook."""
+        workflow = _cargar(RUTA_INTERACCION)
+        conexiones = workflow["connections"]
+        nodo_botones = next(
+            n for n in workflow["nodes"] if "botones" in n["name"].lower() and n["type"] == "n8n-nodes-base.telegram"
+        )
+        assert "inlineKeyboard" in json.dumps(nodo_botones["parameters"])
+
+        destino = conexiones[nodo_botones["name"]]["main"][0][0]["node"]
+        nodo_destino = next(n for n in workflow["nodes"] if n["name"] == destino)
+        assert nodo_destino["type"] == "n8n-nodes-base.wait"
+        assert nodo_destino["parameters"].get("resume") == "webhook"
+
+    def test_agregar_paso_a_config_no_cambia_el_workflow(self):
+        """5.5 TRIANGULATE: el JSON del workflow es identico independientemente
+        de cuantas filas tenga `config_paso_sesion` -- es DATA en la base, no
+        en el grafo. Se verifica indirectamente: ningun nodo referencia un
+        `tipo_sesion` concreto (`setup_ensayo` es la unica excepcion
+        estructural, usada solo para decidir si INVOCAR finalizar_setup, no
+        para bifurcar el flujo de preguntas)."""
+        workflow = _cargar(RUTA_INTERACCION)
+        # Solo el CONTENIDO ejecutable de los nodos (parametros/tipo/nombre) --
+        # la documentacion humana (`meta.description`, `notes`) puede nombrar
+        # los cuatro tipo_sesion sin que eso implique una bifurcacion real.
+        texto_parametros = json.dumps(
+            [{"name": n["name"], "type": n["type"], "parameters": n["parameters"]} for n in workflow["nodes"]]
+        )
+        tipos_sesion_no_permitidos = ("carga_dato", "confirmacion_ocr", "confirmacion_ia")
+
+        for tipo in tipos_sesion_no_permitidos:
+            assert tipo not in texto_parametros, f"El grafo no debe referenciar '{tipo}' (D-3)"
+
+
+class TestEscalamientoTelegramHabilitado:
+    """Change telegram-interaction-layer (C-13), grupo 6 del tasks.md, D-7:
+    delta de la capability pipeline-orchestration."""
+
+    def test_nodo_telegram_ya_no_esta_deshabilitado(self):
+        """6.1/6.2: el nodo Telegram de escalamiento pasa de `disabled: true`
+        (enganche de C-08) a habilitado (RN-GLB-03)."""
+        workflow = _cargar(RUTA_ESCALAMIENTO)
+        nodos_telegram = _nodos_por_tipo(workflow, "n8n-nodes-base.telegram")
+
+        assert nodos_telegram
+        assert all(n.get("disabled") is not True for n in nodos_telegram)
+
+    def test_sigue_sin_token_ni_chat_id_embebidos(self):
+        """6.2: `TELEGRAM_BOT_TOKEN`/`chat_id` provienen de credencial/entorno
+        de n8n, nunca del JSON."""
+        texto = _texto_crudo(RUTA_ESCALAMIENTO)
+
+        assert "TELEGRAM_BOT_TOKEN=" not in texto
+        assert "$env.TELEGRAM_CHAT_ID_INGENIERO" in texto
+
+    def test_resto_del_error_workflow_permanece_intacto(self):
+        """6.3: el payload de escalamiento estructurado (Error Trigger +
+        registro del payload) sigue presente."""
+        workflow = _cargar(RUTA_ESCALAMIENTO)
+
+        assert _nodos_por_tipo(workflow, "n8n-nodes-base.errorTrigger")
+        nombres = _nombres_nodos(workflow)
+        assert any("payload" in n.lower() for n in nombres)

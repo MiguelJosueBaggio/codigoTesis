@@ -264,3 +264,57 @@ class EventoSesion(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     sesion: Mapped["Sesion"] = relationship(back_populates="eventos")
+
+
+# --- RBAC de aplicacion (telegram_user_id -> rol) -- change
+# telegram-interaction-layer (C-13), migracion Alembic 0003. Extiende la
+# MISMA `Base` (DD-11); tipos genericos para paridad SQLite/PostgreSQL
+# (DD-03); PK entero autoincremental. La resolucion de rol y la
+# autorizacion ocurren en Python (D-1 del design), nunca en el grafo de n8n.
+
+ROLES_USUARIO_TELEGRAM_VALIDOS = ("ingeniero", "ayudante")
+
+
+class UsuarioTelegram(Base):
+    """Entidad de RBAC (D-1): mapea `telegram_user_id -> rol`, acotado por
+    `ensayo_id` cuando corresponde (un ayudante se acota a su ensayo; un
+    ingeniero puede tener `ensayo_id=NULL` hasta crear el ensayo, KB 03
+    §RBAC). Fail-closed: un `telegram_user_id` ausente de esta tabla se
+    rechaza en la capa de autorizacion (`pipeline.session_cli`), no aqui."""
+
+    __tablename__ = "usuario_telegram"
+    __table_args__ = (
+        CheckConstraint(
+            _check_in("rol", ROLES_USUARIO_TELEGRAM_VALIDOS),
+            name="ck_usuario_telegram_rol_valido",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[str] = mapped_column(
+        String, unique=True, nullable=False, index=True
+    )
+    rol: Mapped[str] = mapped_column(String, nullable=False)
+    ensayo_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("ensayo.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RechazoAutorizacion(Base):
+    """Entidad de auditoria de rechazos de RBAC (RN-AUD/RN-SES-06, change
+    telegram-interaction-layer / C-13, grupo 2): una fila por cada intento
+    de accion rechazado por `pipeline.rbac.resolver_rol_y_autorizar` --
+    usuario no mapeado, rol sin permiso, `ensayo_id` fuera de alcance o
+    accion desconocida. NO reusa `EventoSesion` (esa tabla exige un
+    `session_id` ya existente -- RN-SES-02/06 -- y un rechazo puede ocurrir
+    ANTES de que exista ninguna sesion, p. ej. un usuario no mapeado)."""
+
+    __tablename__ = "rechazo_autorizacion"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    accion: Mapped[str] = mapped_column(String, nullable=False)
+    motivo: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -1,0 +1,721 @@
+{
+  "id": "interaccion_telegram",
+  "name": "Interaccion Telegram - Loop Generico Unico",
+  "meta": {
+    "description": "Change telegram-interaction-layer (C-13), Decision 3 del design: UN UNICO workflow generico, reutilizable para los cuatro tipo_sesion (setup_ensayo, carga_dato, confirmacion_ocr, confirmacion_ia). Telegram Trigger -> normalizar evento -> Execute Command (pipeline.session_cli resolver/avanzar, RBAC + motor de sesiones de C-12) -> router por RESULTADO (no autorizado / reintento / completada / prompt siguiente). Agregar una pregunta a cualquier flujo es una fila nueva en config_paso_sesion (RN-SES-03), nunca un cambio de este grafo. Enganches deshabilitados y documentados de C-11 (OCR, rama foto) y de C-09 (confirmacion_ia sin productor) -- D-6."
+  },
+  "nodes": [
+    {
+      "id": "trigger-telegram",
+      "name": "Trigger: Mensaje o Callback de Telegram",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "updates": [
+          "message",
+          "callback_query"
+        ]
+      },
+      "notes": "D-3: unico punto de entrada humano (DD-09) -- escucha mensajes de texto/foto y callbacks de botones inline (confirmaciones, D-5).",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "normalizar-evento-telegram",
+      "name": "Normalizar Evento de Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const evento = $input.first().json;\nlet telegramUserId = null;\nlet texto = null;\nlet callbackData = null;\nlet esFoto = false;\nlet esCallback = false;\n\nif (evento.callback_query) {\n  telegramUserId = String(evento.callback_query.from.id);\n  callbackData = evento.callback_query.data;\n  esCallback = true;\n} else if (evento.message) {\n  telegramUserId = String(evento.message.from.id);\n  if (evento.message.photo) {\n    esFoto = true;\n  } else if (typeof evento.message.text === 'string') {\n    texto = evento.message.text;\n  }\n}\n\nconst esRespuesta = esCallback || (texto !== null);\nconst respuesta = esCallback ? callbackData : texto;\n\nreturn [{\n  json: {\n    telegram_user_id: telegramUserId,\n    es_foto: esFoto,\n    es_respuesta: esRespuesta,\n    respuesta: respuesta,\n  },\n}];"
+      },
+      "notes": "Extrae telegram_user_id + la respuesta (texto o callback_data) sin importar si vino un mensaje o un click de boton -- el resto del grafo es generico (D-3)."
+    },
+    {
+      "id": "es-foto",
+      "name": "¿Es Foto?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{$json.es_foto}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "procesar-ocr-c11",
+      "name": "Procesar OCR (enganche C-11)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -120
+      ],
+      "disabled": true,
+      "notes": "DESHABILITADO a proposito (D-6): documenta el punto de enganche exacto que C-11 (OCR zonal) activara. Mismo patron que el nodo Telegram disabled de C-08/C-13 en escalamiento_notificacion.json.",
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ENGANCHE C-11 (deshabilitado a proposito, D-6 del design): aqui se\n// invocaria el pipeline OCR zonal cuando C-11 exista. Sin C-11 construido,\n// este nodo permanece deshabilitado -- n8n bypassea la conexion y la rama\n// foto degrada honestamente enviando 'OCR no disponible' (nodo siguiente),\n// sin romper la sesion ni fingir un OCR que no existe.\nreturn $input.all();"
+      }
+    },
+    {
+      "id": "enviar-ocr-no-disponible",
+      "name": "Enviar OCR No Disponible",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        -120
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$('Normalizar Evento de Telegram').first().json.telegram_user_id}}",
+        "text": "=OCR no disponible todavia -- por favor, enviame el valor como texto."
+      },
+      "notes": "D-6: degradacion honesta -- sin C-11 construido, la rama foto nunca finge un OCR; pide el valor por texto y la sesion sigue sin romperse.",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "preparar-payload-cli",
+      "name": "Preparar Payload CLI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst crypto = require('crypto');\nconst contexto = $('Normalizar Evento de Telegram').first().json;\nconst subcomando = contexto.es_respuesta ? 'avanzar' : 'resolver';\nconst payload = subcomando === 'avanzar'\n  ? { telegram_user_id: contexto.telegram_user_id, respuesta: contexto.respuesta }\n  : { telegram_user_id: contexto.telegram_user_id };\n\nconst dirTemp = $env.PIPELINE_CARPETA_CORRIDAS + '/telegram_cli';\nfs.mkdirSync(dirTemp, { recursive: true });\nconst idArchivo = crypto.randomBytes(8).toString('hex');\nconst archivoPayload = dirTemp + '/' + idArchivo + '.json';\nfs.writeFileSync(archivoPayload, JSON.stringify(payload), 'utf-8');\n\nreturn [{ json: { archivo_payload: archivoPayload, subcomando: subcomando } }];"
+      },
+      "notes": "D-2: arma el payload JSON (resolver o avanzar) y lo escribe a un archivo -- cero interpolacion de datos de usuario en la linea de shell del wrapper siguiente (mismo criterio que 'archivo_comando' en C-08)."
+    },
+    {
+      "id": "invocar-cli-sesion",
+      "name": "Invocar CLI de Sesion",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        880,
+        120
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "command": "={{$env.PYTHON_BIN}} -c \"import subprocess, sys; payload = open(r'{{$json.archivo_payload}}', encoding='utf-8').read(); r = subprocess.run([sys.executable, '-m', 'pipeline.session_cli', '{{$json.subcomando}}'], input=payload, capture_output=True, text=True); print(r.stdout)\""
+      },
+      "notes": "D-2/DD-05: invoca 'python -m pipeline.session_cli resolver|avanzar' (RBAC + motor de sesiones de C-12); el CLI SIEMPRE sale 0 -- el fallo de negocio viaja en el JSON de stdout."
+    },
+    {
+      "id": "parsear-resultado-cli",
+      "name": "Parsear Resultado CLI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        120
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Recombina la salida JSON de 'pipeline.session_cli' (D-2, exit-0 siempre)\n// con el contexto del evento normalizado -- mismo patron anti-divergencia\n// que 'Interpretar Resultado' en ejecutar_etapa_con_reintentos.json (C-08):\n// Execute Command no propaga el contexto de items anteriores.\nconst salida = $input.first().json;\nconst contexto = $('Normalizar Evento de Telegram').first().json;\nlet resultado;\ntry {\n  resultado = JSON.parse(salida.stdout);\n} catch (e) {\n  resultado = { autorizado: false, mensaje: 'Fallo interno al interpretar la respuesta del sistema.' };\n}\nreturn [{\n  json: {\n    ...resultado,\n    telegram_user_id: contexto.telegram_user_id,\n  },\n}];"
+      }
+    },
+    {
+      "id": "router-resultado-cli",
+      "name": "Router de Resultado CLI",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "outputKey": "no_autorizado",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.autorizado}}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "reintento",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.valido}}",
+                    "rightValue": false,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "outputKey": "completada",
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.completada}}",
+                    "rightValue": true,
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": 3
+        }
+      },
+      "notes": "D-3: el grafo NUNCA ramifica por tipo_sesion -- solo por el RESULTADO del CLI (no_autorizado / reintento / completada / prompt_siguiente, salida de fallback). Agregar un paso nuevo a cualquier tipo_sesion es una fila en config_paso_sesion, no un cambio aca."
+    },
+    {
+      "id": "enviar-rechazo",
+      "name": "Enviar Rechazo",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1560,
+        -180
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "={{$json.mensaje}}"
+      },
+      "notes": "D-1: rechazo fail-closed con mensaje neutro (no filtra si el usuario existe).",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "enviar-reintento",
+      "name": "Enviar Reintento",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1560,
+        -20
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "={{$json.mensaje_reintento}}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "es-setup-ensayo",
+      "name": "¿Es Setup Ensayo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        140
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{$json.tipo_sesion}}",
+              "rightValue": "setup_ensayo",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "preparar-payload-finalizar-setup",
+      "name": "Preparar Payload Finalizar Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const fs = require('fs');\nconst crypto = require('crypto');\nconst contexto = $('Parsear Resultado CLI').first().json;\nconst payload = { session_id: contexto.session_id };\n\nconst dirTemp = $env.PIPELINE_CARPETA_CORRIDAS + '/telegram_cli';\nfs.mkdirSync(dirTemp, { recursive: true });\nconst idArchivo = crypto.randomBytes(8).toString('hex');\nconst archivoPayload = dirTemp + '/' + idArchivo + '.json';\nfs.writeFileSync(archivoPayload, JSON.stringify(payload), 'utf-8');\n\nreturn [{ json: { archivo_payload: archivoPayload, subcomando: 'finalizar_setup' } }];"
+      }
+    },
+    {
+      "id": "invocar-finalizar-setup",
+      "name": "Invocar Finalizar Setup",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        60
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "command": "={{$env.PYTHON_BIN}} -c \"import subprocess, sys; payload = open(r'{{$json.archivo_payload}}', encoding='utf-8').read(); r = subprocess.run([sys.executable, '-m', 'pipeline.session_cli', '{{$json.subcomando}}'], input=payload, capture_output=True, text=True); print(r.stdout)\""
+      },
+      "notes": "D-2/D-4: invoca 'python -m pipeline.session_cli finalizar_setup' -- construye data_dictionary.json + analysis_config.yaml (escritura atomica)."
+    },
+    {
+      "id": "parsear-resultado-finalizar-setup",
+      "name": "Parsear Resultado Finalizar Setup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        60
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const salida = $input.first().json;\nconst contexto = $('Normalizar Evento de Telegram').first().json;\nlet resultado;\ntry {\n  resultado = JSON.parse(salida.stdout);\n} catch (e) {\n  resultado = { ok: false, error: 'Fallo interno al interpretar finalizar_setup.' };\n}\nreturn [{\n  json: {\n    ...resultado,\n    telegram_user_id: contexto.telegram_user_id,\n  },\n}];"
+      }
+    },
+    {
+      "id": "enviar-confirmacion-setup",
+      "name": "Enviar Confirmacion de Setup",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2440,
+        60
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "={{$json.ok ? 'Ensayo configurado correctamente.' : 'No se pudo completar el setup: ' + $json.error}}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "enviar-confirmacion-carga",
+      "name": "Enviar Confirmacion de Carga",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        220
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "=Listo, dato registrado. Gracias."
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "requiere-confirmacion-con-botones",
+      "name": "¿Requiere Confirmacion con Botones?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        340
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{$json.tipo_respuesta}}",
+              "rightValue": "choice",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "notes": "RN-OCR-04/RN-IA-02: cualquier paso 'choice' (confirmacion_ocr/confirmacion_ia u otro) usa botones inline + pausa (D-5) -- el grafo no distingue tipo_sesion, solo tipo_respuesta."
+    },
+    {
+      "id": "enviar-prompt-siguiente",
+      "name": "Enviar Prompt Siguiente",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        420
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "={{$json.prompt}}"
+      },
+      "notes": "Paso de texto/numero/foto plano (no 'choice'): envia el prompt del paso actual sin botones ni pausa.",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "enviar-confirmacion-con-botones",
+      "name": "Enviar Confirmacion con Botones",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1780,
+        300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$json.telegram_user_id}}",
+        "text": "={{$json.prompt}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Confirmar",
+                    "additionalFields": {
+                      "callback_data": "={{$json.session_id}}:{{$json.paso_actual}}:confirmar"
+                    }
+                  },
+                  {
+                    "text": "Corregir",
+                    "additionalFields": {
+                      "callback_data": "={{$json.session_id}}:{{$json.paso_actual}}:corregir"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "notes": "D-5: correlaciona el callback por session_id + paso (recomendacion del design, Open Question) -- un clic tardio sobre un mensaje viejo no reanuda una sesion ya expirada.",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      }
+    },
+    {
+      "id": "esperar-confirmacion-wait-for-webhook",
+      "name": "Esperar Confirmacion (Wait for Webhook)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        300
+      ],
+      "parameters": {
+        "resume": "webhook",
+        "options": {}
+      },
+      "notes": "D-5: pausa el workflow (human-in-the-loop) hasta que llegue el clic del boton; el runbook (task 8) documenta la correlacion exacta resume-URL vs session_id contra el comportamiento real de n8n 2.28.6 (Open Question del design)."
+    },
+    {
+      "id": "registrar-confirmacion-en-bitacora",
+      "name": "Registrar Confirmacion en Bitacora",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2220,
+        300
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "command": "={{$env.PYTHON_BIN}} -c \"import subprocess, sys; payload = open(r'{{$json.archivo_payload}}', encoding='utf-8').read(); r = subprocess.run([sys.executable, '-m', 'pipeline.session_cli', '{{$json.subcomando}}'], input=payload, capture_output=True, text=True); print(r.stdout)\""
+      },
+      "notes": "Reanuda con el valor confirmado y lo pasa a 'pipeline.session_cli avanzar' -- session_engine.avanzar (C-12) ya audita cada respuesta valida en evento_sesion (RN-AUD-02/RN-SES-06), incluyendo el valor original vs. el confirmado."
+    }
+  ],
+  "connections": {
+    "Trigger: Mensaje o Callback de Telegram": {
+      "main": [
+        [
+          {
+            "node": "Normalizar Evento de Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar Evento de Telegram": {
+      "main": [
+        [
+          {
+            "node": "¿Es Foto?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es Foto?": {
+      "main": [
+        [
+          {
+            "node": "Procesar OCR (enganche C-11)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar Payload CLI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesar OCR (enganche C-11)": {
+      "main": [
+        [
+          {
+            "node": "Enviar OCR No Disponible",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Payload CLI": {
+      "main": [
+        [
+          {
+            "node": "Invocar CLI de Sesion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invocar CLI de Sesion": {
+      "main": [
+        [
+          {
+            "node": "Parsear Resultado CLI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear Resultado CLI": {
+      "main": [
+        [
+          {
+            "node": "Router de Resultado CLI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Router de Resultado CLI": {
+      "main": [
+        [
+          {
+            "node": "Enviar Rechazo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar Reintento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Es Setup Ensayo?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Requiere Confirmacion con Botones?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es Setup Ensayo?": {
+      "main": [
+        [
+          {
+            "node": "Preparar Payload Finalizar Setup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar Confirmacion de Carga",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Payload Finalizar Setup": {
+      "main": [
+        [
+          {
+            "node": "Invocar Finalizar Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Invocar Finalizar Setup": {
+      "main": [
+        [
+          {
+            "node": "Parsear Resultado Finalizar Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear Resultado Finalizar Setup": {
+      "main": [
+        [
+          {
+            "node": "Enviar Confirmacion de Setup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Requiere Confirmacion con Botones?": {
+      "main": [
+        [
+          {
+            "node": "Enviar Confirmacion con Botones",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar Prompt Siguiente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar Confirmacion con Botones": {
+      "main": [
+        [
+          {
+            "node": "Esperar Confirmacion (Wait for Webhook)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar Confirmacion (Wait for Webhook)": {
+      "main": [
+        [
+          {
+            "node": "Registrar Confirmacion en Bitacora",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": true,
+    "executionOrder": "v1"
+  }
+}

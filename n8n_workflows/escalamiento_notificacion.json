@@ -58,15 +58,20 @@
     },
     {
       "id": "notificar-telegram-c13",
-      "name": "Notificar via Telegram (placeholder C-13)",
+      "name": "Notificar via Telegram",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
         440,
         0
       ],
-      "disabled": true,
-      "notes": "DESHABILITADO a proposito (D-6): documenta el punto de enganche exacto que C-13 activara -- credenciales del bot, chat id destino y formato final del mensaje son responsabilidad de C-13 (DD-09), no de este change.",
+      "notes": "Change telegram-interaction-layer (C-13), D-7: HABILITADO -- el canal Telegram (DD-09) ya esta cableado, asi que el escalamiento (RN-GLB-03) envia efectivamente el mensaje. Credencial del bot referenciada por NOMBRE (nunca el token en este JSON); el chat id del Ingeniero responsable viene de `$env.TELEGRAM_CHAT_ID_INGENIERO` (Open Question del design: se recomienda que ese env var se pueble con el mismo `telegram_user_id` que el seed de `usuario_telegram` mapea a rol 'ingeniero' -- ver runbook, n8n_workflows/README.md).",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram_bot_ensayos_agricolas",
+          "name": "Telegram Bot (Ensayos Agricolas)"
+        }
+      },
       "parameters": {
         "resource": "message",
         "operation": "sendMessage",

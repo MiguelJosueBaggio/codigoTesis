@@ -31,6 +31,8 @@ _TABLAS_ESPERADAS = {
 }
 
 _TABLAS_SESION_ESPERADAS = {"sesion", "config_paso_sesion", "evento_sesion"}
+_TABLA_USUARIO_TELEGRAM_ESPERADA = {"usuario_telegram"}
+_TABLA_RECHAZO_AUTORIZACION_ESPERADA = {"rechazo_autorizacion"}
 
 
 def _alembic_config(database_url: str) -> Config:
@@ -133,6 +135,142 @@ def test_migracion_downgrade_a_0001_elimina_solo_las_tablas_de_sesion(tmp_path, 
 
     assert _TABLAS_ESPERADAS <= tablas
     assert not (_TABLAS_SESION_ESPERADAS & tablas)
+
+
+def test_migracion_0003_crea_usuario_telegram_en_sqlite(tmp_path, monkeypatch):
+    """Change telegram-interaction-layer (C-13): migracion `0003` extiende
+    el esquema de `0002` con la tabla RBAC, sin tocarlo."""
+    db_path = tmp_path / "migracion_usuario_telegram.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLAS_ESPERADAS <= tablas
+    assert _TABLAS_SESION_ESPERADAS <= tablas
+    assert _TABLA_USUARIO_TELEGRAM_ESPERADA <= tablas
+
+
+def test_migracion_0003_paridad_con_base_metadata(tmp_path, monkeypatch):
+    """La migracion 0003 (artefacto versionado) debe crear el MISMO conjunto
+    de tablas que `Base.metadata` (fuente unica del esquema, DD-11)."""
+    from pipeline.models import Base
+
+    db_path = tmp_path / "migracion_0003_paridad.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas_migracion = set(sa.inspect(engine).get_table_names()) - {"alembic_version"}
+    finally:
+        engine.dispose()
+
+    assert tablas_migracion == set(Base.metadata.tables.keys())
+
+
+def test_migracion_downgrade_0003_a_0002_elimina_solo_usuario_telegram(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_usuario_telegram_downgrade.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0002")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLAS_SESION_ESPERADAS <= tablas
+    assert not (_TABLA_USUARIO_TELEGRAM_ESPERADA & tablas)
+
+
+def test_migracion_upgrade_downgrade_upgrade_0003_es_reversible(tmp_path, monkeypatch):
+    """1.3: verificar upgrade->downgrade->upgrade sobre SQLite real."""
+    db_path = tmp_path / "migracion_0003_ciclo.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0002")
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLA_USUARIO_TELEGRAM_ESPERADA <= tablas
+
+
+def test_migracion_0004_crea_rechazo_autorizacion_en_sqlite(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_rechazo_autorizacion.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLA_RECHAZO_AUTORIZACION_ESPERADA <= tablas
+
+
+def test_migracion_0004_paridad_con_base_metadata(tmp_path, monkeypatch):
+    from pipeline.models import Base
+
+    db_path = tmp_path / "migracion_0004_paridad.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas_migracion = set(sa.inspect(engine).get_table_names()) - {"alembic_version"}
+    finally:
+        engine.dispose()
+
+    assert tablas_migracion == set(Base.metadata.tables.keys())
+
+
+def test_migracion_downgrade_0004_a_0003_elimina_solo_rechazo_autorizacion(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_rechazo_autorizacion_downgrade.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0003")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLA_USUARIO_TELEGRAM_ESPERADA <= tablas
+    assert not (_TABLA_RECHAZO_AUTORIZACION_ESPERADA & tablas)
 
 
 @pytest.mark.skipif(
