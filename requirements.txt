@@ -36,3 +36,9 @@ openpyxl>=3.1
 # (PyYAML 6.0.3) antes de fijar el pin (mismo protocolo que great_expectations/
 # SQLAlchemy arriba).
 PyYAML>=6.0,<7.0
+
+# Fuzzy matching determinista para sugerencias de estandarizacion lexica
+# (pipeline/ai_support.py) — change ai-support-standardization (C-09, D-2 del
+# design). NO usa LLM. Instalabilidad verificada en el venv del proyecto:
+# rapidfuzz 3.14.5 (mismo protocolo que great_expectations/SQLAlchemy arriba).
+rapidfuzz>=3.0,<4.0

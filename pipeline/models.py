@@ -318,3 +318,50 @@ class RechazoAutorizacion(Base):
     accion: Mapped[str] = mapped_column(String, nullable=False)
     motivo: Mapped[str] = mapped_column(String, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# --- SugerenciaIA (RN-IA-01/02/03) -- change ai-support-standardization
+# (C-09), migracion Alembic 0005. Extiende la MISMA Base (DD-11); tipos
+# genericos para paridad SQLite/PostgreSQL (DD-03); PK entero autoincremental.
+# Handle durable de una sugerencia de apoyo (lexica/anomalia) a traves del
+# gate asincrono de aprobacion humana (generacion -> confirmacion por
+# Telegram -> aplicacion), D-5 del design.
+
+TIPOS_SUGERENCIA_IA_VALIDOS = ("lexica", "anomalia")
+ORIGENES_SUGERENCIA_IA_VALIDOS = ("fuzzy", "estadistica", "llm")
+ESTADOS_SUGERENCIA_IA_VALIDOS = ("generada", "aprobada", "rechazada", "aplicada")
+
+
+class SugerenciaIA(Base):
+    """Entidad de sistema (D-5): una sugerencia de estandarizacion lexica o
+    de anomalia estadistica propuesta por `pipeline.ai_support`, con su ciclo
+    de vida de aprobacion humana (RN-IA-01/02/03). `valor_sugerido` es JSON
+    nullable (`None` para anomalias, D-3: marcan para revision, no proponen
+    reemplazo). `ejecucion_id` es nullable hasta que la sugerencia se aplica
+    (liga la decision a la `Ejecucion` de C-06 que la aplico)."""
+
+    __tablename__ = "sugerencia_ia"
+    __table_args__ = (
+        CheckConstraint(_check_in("tipo", TIPOS_SUGERENCIA_IA_VALIDOS), name="ck_sugerencia_ia_tipo_valido"),
+        CheckConstraint(
+            _check_in("origen", ORIGENES_SUGERENCIA_IA_VALIDOS), name="ck_sugerencia_ia_origen_valido"
+        ),
+        CheckConstraint(
+            _check_in("estado", ESTADOS_SUGERENCIA_IA_VALIDOS), name="ck_sugerencia_ia_estado_valido"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    columna: Mapped[str] = mapped_column(String, nullable=False)
+    valor_original: Mapped[Any] = mapped_column(JSON, nullable=False)
+    valor_sugerido: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    tipo: Mapped[str] = mapped_column(String, nullable=False)
+    score: Mapped[float] = mapped_column(Float, nullable=False)
+    origen: Mapped[str] = mapped_column(String, nullable=False)
+    estado: Mapped[str] = mapped_column(String, nullable=False, default="generada")
+    justificacion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    ejecucion_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("ejecucion.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

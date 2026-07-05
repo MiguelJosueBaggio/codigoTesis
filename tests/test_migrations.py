@@ -33,6 +33,7 @@ _TABLAS_ESPERADAS = {
 _TABLAS_SESION_ESPERADAS = {"sesion", "config_paso_sesion", "evento_sesion"}
 _TABLA_USUARIO_TELEGRAM_ESPERADA = {"usuario_telegram"}
 _TABLA_RECHAZO_AUTORIZACION_ESPERADA = {"rechazo_autorizacion"}
+_TABLA_SUGERENCIA_IA_ESPERADA = {"sugerencia_ia"}
 
 
 def _alembic_config(database_url: str) -> Config:
@@ -271,6 +272,122 @@ def test_migracion_downgrade_0004_a_0003_elimina_solo_rechazo_autorizacion(tmp_p
 
     assert _TABLA_USUARIO_TELEGRAM_ESPERADA <= tablas
     assert not (_TABLA_RECHAZO_AUTORIZACION_ESPERADA & tablas)
+
+
+def test_migracion_0005_crea_sugerencia_ia_en_sqlite(tmp_path, monkeypatch):
+    """Change ai-support-standardization (C-09): migracion `0005` extiende el
+    esquema de `0004` con la tabla `sugerencia_ia`, sin tocarlo."""
+    db_path = tmp_path / "migracion_sugerencia_ia.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert _TABLAS_ESPERADAS <= tablas
+    assert _TABLA_SUGERENCIA_IA_ESPERADA <= tablas
+
+
+def test_migracion_0005_paridad_con_base_metadata(tmp_path, monkeypatch):
+    from pipeline.models import Base
+
+    db_path = tmp_path / "migracion_0005_paridad.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas_migracion = set(sa.inspect(engine).get_table_names()) - {"alembic_version"}
+    finally:
+        engine.dispose()
+
+    assert tablas_migracion == set(Base.metadata.tables.keys())
+
+
+def test_migracion_0005_siembra_los_pasos_de_confirmacion_ia(tmp_path, monkeypatch):
+    """Task 8.3: el seed de `config_paso_sesion` para `confirmacion_ia` va en
+    la migracion 0005 (RN-SES-03: la secuencia de pasos es DATA)."""
+    db_path = tmp_path / "migracion_0005_seed.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        with engine.connect() as conn:
+            filas = conn.execute(
+                sa.text(
+                    "SELECT paso, tipo_respuesta FROM config_paso_sesion "
+                    "WHERE tipo_sesion = 'confirmacion_ia' ORDER BY paso"
+                )
+            ).all()
+    finally:
+        engine.dispose()
+
+    assert [tuple(fila) for fila in filas] == [(0, "choice"), (1, "texto")]
+
+
+def test_migracion_downgrade_0005_a_0004_elimina_sugerencia_ia_y_el_seed(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_sugerencia_ia_downgrade.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0004")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+        with engine.connect() as conn:
+            filas = conn.execute(
+                sa.text(
+                    "SELECT COUNT(*) FROM config_paso_sesion WHERE tipo_sesion = 'confirmacion_ia'"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert _TABLA_RECHAZO_AUTORIZACION_ESPERADA <= tablas
+    assert not (_TABLA_SUGERENCIA_IA_ESPERADA & tablas)
+    assert filas == 0
+
+
+def test_migracion_upgrade_downgrade_upgrade_0005_es_reversible(tmp_path, monkeypatch):
+    db_path = tmp_path / "migracion_0005_ciclo.db"
+    url = f"sqlite:///{db_path}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    cfg = _alembic_config(url)
+
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "0004")
+    command.upgrade(cfg, "head")
+
+    engine = sa.create_engine(url)
+    try:
+        tablas = set(sa.inspect(engine).get_table_names())
+        with engine.connect() as conn:
+            cantidad = conn.execute(
+                sa.text(
+                    "SELECT COUNT(*) FROM config_paso_sesion WHERE tipo_sesion = 'confirmacion_ia'"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert _TABLA_SUGERENCIA_IA_ESPERADA <= tablas
+    assert cantidad == 2
 
 
 @pytest.mark.skipif(

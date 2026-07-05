@@ -56,6 +56,8 @@ Cada etapa se invoca como `{{$env.PYTHON_BIN}} -m pipeline.<etapa> ...` — nunc
 
 `interaccion_telegram.json` es la **superficie humana única** del sistema (DD-09): ningún usuario final toca la CLI ni edita archivos de configuración. El único mecanismo interno que invoca Python es `python -m pipeline.session_cli <resolver|avanzar|expirar|finalizar_setup>` (Execute Command, contrato JSON stdin/stdout, exit code **siempre 0** — D-2 del design). El grafo del workflow no se ramifica por `tipo_sesion`: agregar un paso a `setup_ensayo`/`carga_dato`/`confirmacion_ocr`/`confirmacion_ia` es una fila nueva en `config_paso_sesion` (RN-SES-03), nunca un cambio de este JSON.
 
+> **`confirmacion_ia` (change `ai-support-standardization`, C-09):** la migración `0005` siembra los dos pasos de `confirmacion_ia` (`choice` aprobar/rechazar + `texto` justificación) y `pipeline.ai_support.crear_confirmacion_ia` es su productor Python — pero **ninguno de los dos dispara este workflow automáticamente**. El grafo genérico de `interaccion_telegram.json` ya enruta cualquier paso `choice` (botones inline + pausa/reanudación, ver nodo `Enviar Confirmacion con Botones`), así que el día que una corrida del pipeline cree una sesión `confirmacion_ia`, el mismo JSON la atiende sin cambios. El disparo automático desde una corrida (y su punto exacto en el pipeline) queda como enganche documentado, diferido a la fase de caso de estudio (D-6 del design de C-09).
+
 ### 8.1 — Alta de la credencial de Telegram + importación + republicación
 
 1. **Crear el bot** con [@BotFather](https://t.me/BotFather) y obtener el `TELEGRAM_BOT_TOKEN`.

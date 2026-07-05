@@ -306,7 +306,7 @@ C-01 → C-02 → C-03* / C-04* → C-05 → C-06 → C-07 → C-08 → C-10
   - `knowledge-base/10_preguntas_abiertas.md` (pregunta Alta: necesidad de UI propia)
 
 ### [C-09] `ai-support-standardization` (opcional — Épica 6)
-- **Estado**: `[ ]` pendiente
+- **Estado**: `[x]` completado
 - **Scope**:
   - Componente de sugerencia: estandarización léxica de categóricas con alta variabilidad, detección de anomalías estadísticas
   - Proveedor LLM/IA concreto queda sin definir en la tesis (pregunta Media prioridad) — implementar detrás de una interfaz *pluggable* con un provider mock por defecto, para no bloquear el resto del pipeline
@@ -404,7 +404,7 @@ C-01 → C-02 → C-03* / C-04* → C-05 → C-06 → C-07 → C-08 → C-10
 | C-06 persistence-audit-module | 2 | CRITICO | C-01, C-05 | `[x]` |
 | C-07 statistical-analysis-module | 2 | MEDIO | C-06 | `[x]` |
 | C-08 n8n-orchestration-workflows | 3 | ALTO | C-03, C-04, C-05, C-06, C-07 | `[x]` |
-| C-09 ai-support-standardization (opcional) | 3 | ALTO | C-05, C-06 | `[ ]` |
+| C-09 ai-support-standardization (opcional) | 3 | ALTO | C-05, C-06 | `[x]` |
 | C-10 case-study-evaluation | 4 | CRITICO | C-08 | `[ ]` ⚠ BLOQUEADO |
 | C-11 ocr-field-capture (opcional) | 1 | MEDIO | C-02, C-03 | `[ ]` |
 | C-12 session-engine (opcional) | 3 | MEDIO | C-06 | `[x]` |

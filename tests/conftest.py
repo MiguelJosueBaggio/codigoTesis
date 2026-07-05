@@ -90,3 +90,39 @@ def dataset_bca_df() -> pd.DataFrame:
     observacion por celda bloque x tratamiento.
     """
     return pd.read_csv(FIXTURES_DIR / "dataset_bca_sintetico.csv")
+
+
+@pytest.fixture
+def diccionario_ai_support():
+    """Diccionario de variables vigente (`config/data_dictionary.json`, C-02)
+    -- fuente de `valores_admisibles` para las sugerencias de estandarizacion
+    lexica y de los `tipo_dato` numericos para la deteccion de anomalias
+    (change ai-support-standardization, C-09)."""
+    from pipeline.data_dictionary import load_data_dictionary
+
+    return load_data_dictionary(Path(__file__).parent.parent / "config" / "data_dictionary.json")
+
+
+@pytest.fixture
+def dataset_ai_support_categorico_df() -> pd.DataFrame:
+    """Dataset sintetico derivado del diccionario de variables (C-02):
+    variantes lexicas de `tratamiento` (`valores_admisibles = ["Testigo",
+    "Fertilizado"]`) mas una columna `id_unidad` (texto libre, SIN
+    `valores_admisibles`) para ejercitar `sugerir_estandarizacion` (change
+    ai-support-standardization, C-09)."""
+    return pd.DataFrame(
+        {
+            "tratamiento": ["testigo ", "TESTIGO", "Fertilizado", "tetigo", "Testigo"],
+            "id_unidad": ["U1", "U2", "U3", "U4", "U5"],
+        }
+    )
+
+
+@pytest.fixture
+def dataset_ai_support_numerico_df() -> pd.DataFrame:
+    """Dataset sintetico numerico (columna `valor`, `tipo_dato = "real"` en
+    el diccionario C-02) con un outlier claro por IQR de Tukey para ejercitar
+    `detectar_anomalias` (change ai-support-standardization, C-09)."""
+    return pd.DataFrame(
+        {"valor": [100.0, 102.0, 98.0, 101.0, 99.0, 103.0, 97.0, 500.0]}
+    )
